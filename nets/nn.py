@@ -1,76 +1,52 @@
-from functools import partial
-
 import torch
 from torch import nn
 
 from utils.utils import Conv2dNormActivation, SqueezeExcitation, _make_divisible
 
 
-# __all__ = ["MobileNetV3", "mobilenet_v3_large", "mobilenet_v3_small"]
-
-
-class InvertedResidualConfig:
-    # Stores information listed at Tables 1 and 2 of the MobileNetV3 paper
-    def __init__(self, in_channels, kernel, exp_channels, out_channels, use_se, activation, stride, dilation,
-                 width_mult):
-        self.input_channels = self.adjust_channels(in_channels, width_mult)
-        self.kernel = kernel
-        self.expanded_channels = self.adjust_channels(exp_channels, width_mult)
-        self.out_channels = self.adjust_channels(out_channels, width_mult)
-        self.use_se = use_se
-        self.use_hs = activation == "HS"
-        self.stride = stride
-        self.dilation = dilation
-
-    @staticmethod
-    def adjust_channels(channels, width_mult):
-        return _make_divisible(channels * width_mult, 8)
-
-
 class InvertedResidual(nn.Module):
     # Implemented as described at section 5 of MobileNetV3 paper
-    def __init__(self, config, norm_layer):
+    def __init__(self, in_channels, kernel, exp_channels, out_channels, use_se, activation, stride, dilation,
+                 width_mult):
         super().__init__()
+        self.in_channels = _make_divisible(in_channels * width_mult)
+        self.exp_channels = _make_divisible(exp_channels * width_mult)
+        self.out_channels = _make_divisible(out_channels * width_mult)
 
-        self.use_res_connect = config.stride == 1 and config.input_channels == config.out_channels
+        self.use_res_connect = stride == 1 and self.in_channels == self.out_channels
 
         layers = []
-        activation_layer = nn.Hardswish if config.use_hs else nn.ReLU
+        activation_layer = nn.Hardswish if activation == 'HS' else nn.ReLU
 
         # expand
-        if config.expanded_channels != config.input_channels:
-            layers.append(Conv2dNormActivation(config.input_channels,
-                                               config.expanded_channels,
+        if self.exp_channels != self.in_channels:
+            layers.append(Conv2dNormActivation(self.in_channels,
+                                               self.exp_channels,
                                                kernel_size=1,
-                                               norm_layer=norm_layer,
                                                activation_layer=activation_layer)
                           )
 
         # depthwise
-        layers.append(Conv2dNormActivation(config.expanded_channels,
-                                           config.expanded_channels,
-                                           kernel_size=config.kernel,
-                                           stride=config.stride,
-                                           dilation=config.dilation,
-                                           groups=config.expanded_channels,
-                                           norm_layer=norm_layer,
+        layers.append(Conv2dNormActivation(self.exp_channels,
+                                           self.exp_channels,
+                                           kernel_size=kernel,
+                                           stride=stride,
+                                           dilation=dilation,
+                                           groups=self.exp_channels,
                                            activation_layer=activation_layer)
                       )
-        if config.use_se:
-            squeeze_channels = _make_divisible(config.expanded_channels // 4, 8)
-            layers.append(SqueezeExcitation(config.expanded_channels, squeeze_channels))
+        if use_se:
+            squeeze_channels = _make_divisible(self.exp_channels // 4)
+            layers.append(SqueezeExcitation(self.exp_channels, squeeze_channels))
 
         # project
-        layers.append(Conv2dNormActivation(config.expanded_channels,
-                                           config.out_channels,
+        layers.append(Conv2dNormActivation(self.exp_channels,
+                                           self.out_channels,
                                            kernel_size=1,
-                                           norm_layer=norm_layer,
                                            activation_layer=None)
                       )
 
         self.block = nn.Sequential(*layers)
-        self.out_channels = config.out_channels
-        self._is_cn = config.stride > 1
 
     def forward(self, x):
         result = self.block(x)
@@ -81,27 +57,23 @@ class InvertedResidual(nn.Module):
 
 class MobileNetV3(nn.Module):
 
-    def __init__(self, inverted_residual_setting, last_channel, num_classes=1000, norm_layer=None, dropout=0.2):
+    def __init__(self, inverted_residual_setting, last_channel, num_classes=1000, dropout=0.2):
         super().__init__()
-
-        if norm_layer is None:
-            norm_layer = partial(nn.BatchNorm2d, eps=0.001, momentum=0.01)
 
         layers = []
 
         # building first layer
-        firstconv_output_channels = inverted_residual_setting[0].input_channels
+        firstconv_output_channels = inverted_residual_setting[0].in_channels
         layers.append(Conv2dNormActivation(3,
                                            firstconv_output_channels,
                                            kernel_size=3,
                                            stride=2,
-                                           norm_layer=norm_layer,
                                            activation_layer=nn.Hardswish)
                       )
 
         # building inverted residual blocks
-        for config in inverted_residual_setting:
-            layers.append(InvertedResidual(config, norm_layer))
+        layers.extend(inverted_residual_setting)
+
 
         # building last several layers
         lastconv_input_channels = inverted_residual_setting[-1].out_channels
@@ -110,7 +82,6 @@ class MobileNetV3(nn.Module):
         layers.append(Conv2dNormActivation(lastconv_input_channels,
                                            lastconv_output_channels,
                                            kernel_size=1,
-                                           norm_layer=norm_layer,
                                            activation_layer=nn.Hardswish)
                       )
 
@@ -150,43 +121,40 @@ class MobileNetV3(nn.Module):
 
 
 def _mobilenet_v3_conf(arch: str, width_mult: float = 1.0):
-    bneck_conf = partial(InvertedResidualConfig, width_mult=width_mult)
-    adjust_channels = partial(InvertedResidualConfig.adjust_channels, width_mult=width_mult)
-
     if arch == "mobilenet_v3_large":
         inverted_residual_setting = [
-            bneck_conf(16, 3, 16, 16, False, "RE", 1, 1),
-            bneck_conf(16, 3, 64, 24, False, "RE", 2, 1),  # C1
-            bneck_conf(24, 3, 72, 24, False, "RE", 1, 1),
-            bneck_conf(24, 5, 72, 40, True, "RE", 2, 1),  # C2
-            bneck_conf(40, 5, 120, 40, True, "RE", 1, 1),
-            bneck_conf(40, 5, 120, 40, True, "RE", 1, 1),
-            bneck_conf(40, 3, 240, 80, False, "HS", 2, 1),  # C3
-            bneck_conf(80, 3, 200, 80, False, "HS", 1, 1),
-            bneck_conf(80, 3, 184, 80, False, "HS", 1, 1),
-            bneck_conf(80, 3, 184, 80, False, "HS", 1, 1),
-            bneck_conf(80, 3, 480, 112, True, "HS", 1, 1),
-            bneck_conf(112, 3, 672, 112, True, "HS", 1, 1),
-            bneck_conf(112, 5, 672, 160, True, "HS", 2, 1),  # C4
-            bneck_conf(160, 5, 960, 160, True, "HS", 1, 1),
-            bneck_conf(160, 5, 960, 160, True, "HS", 1, 1),
+            InvertedResidual(16, 3, 16, 16, False, "RE", 1, 1, width_mult),
+            InvertedResidual(16, 3, 64, 24, False, "RE", 2, 1, width_mult),  # C1
+            InvertedResidual(24, 3, 72, 24, False, "RE", 1, 1, width_mult),
+            InvertedResidual(24, 5, 72, 40, True, "RE", 2, 1, width_mult),  # C2
+            InvertedResidual(40, 5, 120, 40, True, "RE", 1, 1, width_mult),
+            InvertedResidual(40, 5, 120, 40, True, "RE", 1, 1, width_mult),
+            InvertedResidual(40, 3, 240, 80, False, "HS", 2, 1, width_mult),  # C3
+            InvertedResidual(80, 3, 200, 80, False, "HS", 1, 1, width_mult),
+            InvertedResidual(80, 3, 184, 80, False, "HS", 1, 1, width_mult),
+            InvertedResidual(80, 3, 184, 80, False, "HS", 1, 1, width_mult),
+            InvertedResidual(80, 3, 480, 112, True, "HS", 1, 1, width_mult),
+            InvertedResidual(112, 3, 672, 112, True, "HS", 1, 1, width_mult),
+            InvertedResidual(112, 5, 672, 160, True, "HS", 2, 1, width_mult),  # C4
+            InvertedResidual(160, 5, 960, 160, True, "HS", 1, 1, width_mult),
+            InvertedResidual(160, 5, 960, 160, True, "HS", 1, 1, width_mult),
         ]
-        last_channel = adjust_channels(1280)  # C5
+        last_channel = _make_divisible(1280 * width_mult)  # C5
     elif arch == "mobilenet_v3_small":
         inverted_residual_setting = [
-            bneck_conf(16, 3, 16, 16, True, "RE", 2, 1),  # C1
-            bneck_conf(16, 3, 72, 24, False, "RE", 2, 1),  # C2
-            bneck_conf(24, 3, 88, 24, False, "RE", 1, 1),
-            bneck_conf(24, 5, 96, 40, True, "HS", 2, 1),  # C3
-            bneck_conf(40, 5, 240, 40, True, "HS", 1, 1),
-            bneck_conf(40, 5, 240, 40, True, "HS", 1, 1),
-            bneck_conf(40, 5, 120, 48, True, "HS", 1, 1),
-            bneck_conf(48, 5, 144, 48, True, "HS", 1, 1),
-            bneck_conf(48, 5, 288, 96, True, "HS", 2, 1),  # C4
-            bneck_conf(96, 5, 576, 96, True, "HS", 1, 1),
-            bneck_conf(96, 5, 576, 96, True, "HS", 1, 1),
+            InvertedResidual(16, 3, 16, 16, True, "RE", 2, 1, width_mult),  # C1
+            InvertedResidual(16, 3, 72, 24, False, "RE", 2, 1, width_mult),  # C2
+            InvertedResidual(24, 3, 88, 24, False, "RE", 1, 1, width_mult),
+            InvertedResidual(24, 5, 96, 40, True, "HS", 2, 1, width_mult),  # C3
+            InvertedResidual(40, 5, 240, 40, True, "HS", 1, 1, width_mult),
+            InvertedResidual(40, 5, 240, 40, True, "HS", 1, 1, width_mult),
+            InvertedResidual(40, 5, 120, 48, True, "HS", 1, 1, width_mult),
+            InvertedResidual(48, 5, 144, 48, True, "HS", 1, 1, width_mult),
+            InvertedResidual(48, 5, 288, 96, True, "HS", 2, 1, width_mult),  # C4
+            InvertedResidual(96, 5, 576, 96, True, "HS", 1, 1, width_mult),
+            InvertedResidual(96, 5, 576, 96, True, "HS", 1, 1, width_mult),
         ]
-        last_channel = adjust_channels(1024)  # C5
+        last_channel = _make_divisible(1024 * width_mult)  # C5
     else:
         raise ValueError(f"Unsupported model type {arch}")
 
