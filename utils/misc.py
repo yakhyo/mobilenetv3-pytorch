@@ -9,7 +9,7 @@ class Conv2dAct(torch.nn.Module):
                                     out_channels=c2,
                                     kernel_size=k,
                                     stride=s,
-                                    padding=_pad(k) if p is None else p,
+                                    padding=_pad(k, d) if p is None else p,
                                     dilation=d,
                                     groups=g,
                                     bias=False)
