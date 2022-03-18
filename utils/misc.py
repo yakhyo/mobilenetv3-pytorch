@@ -47,13 +47,12 @@ class SqueezeExcitation(torch.nn.Module):
 
 
 class InvertedResidual(torch.nn.Module):
-    _width_mult = 1.0
 
     def __init__(self, in_channels, mid_channels, out_channels, kernel_size, stride, use_se, act):
         super().__init__()
-        self._inp = _make_divisible(in_channels * self._width_mult)
-        self._mid = _make_divisible(mid_channels * self._width_mult)
-        self._out = _make_divisible(out_channels * self._width_mult)
+        self._inp = in_channels
+        self._mid = mid_channels
+        self._out = out_channels
         self._shortcut = stride == 1 and self._inp == self._out
 
         self._block = torch.nn.Sequential(
