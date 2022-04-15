@@ -42,27 +42,21 @@ class MobileNetV3L(nn.Module):
             InvertedResidual(_inp[14], _mid[14], _out[14], 5, 1, True, nn.Hardswish),
         ])
 
-        self._layers.append(Conv2dAct(_inp[15], _out[15], act=nn.Hardswish))
-        self._features = nn.Sequential(*self._layers)
-        self._pool = nn.AdaptiveAvgPool2d(1)
-        self._classifier = nn.Sequential(
+        self.layers.append(Conv2dAct(_inp[15], _out[15], act=nn.Hardswish))
+        self.features = nn.Sequential(*self.layers)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.classifier = nn.Sequential(
             nn.Linear(in_features=_out[15], out_features=_out[16]),
             nn.Hardswish(inplace=True),
             nn.Dropout(p=dropout, inplace=True),
             nn.Linear(in_features=_out[16], out_features=num_classes),
         )
 
-    def features(self, x):
-        return self._features(x)
-
     def forward(self, x):
-        x = self._features(x)
-
-        x = self._pool(x)
+        x = self.features(x)
+        x = self.pool(x)
         x = torch.flatten(x, 1)
-
-        x = self._classifier(x)
-
+        x = self.classifier(x)
         return x
 
 
@@ -101,27 +95,21 @@ class MobileNetV3S(nn.Module):
 
         ])
 
-        self._layers.append(Conv2dAct(_inp[11], _out[11], 1, 2, act=nn.Hardswish))  # C5 1/32
-        self._features = nn.Sequential(*self._layers)
-        self._pool = nn.AdaptiveAvgPool2d(1)
-        self._classifier = nn.Sequential(
+        self.layers.append(Conv2dAct(_inp[11], _out[11], 1, 2, act=nn.Hardswish))  # C5 1/32
+        self.features = nn.Sequential(*self.layers)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.classifier = nn.Sequential(
             nn.Linear(in_features=_out[11], out_features=_out[12]),
             nn.Hardswish(inplace=True),
             nn.Dropout(p=dropout, inplace=True),
             nn.Linear(in_features=_out[12], out_features=num_classes),
         )
 
-    def features(self, x):
-        return self._features(x)
-
     def forward(self, x):
-        x = self._features(x)
-
-        x = self._pool(x)
+        x = self.features(x)
+        x = self.pool(x)
         x = torch.flatten(x, 1)
-
-        x = self._classifier(x)
-
+        x = self.classifier(x)
         return x
 
 
