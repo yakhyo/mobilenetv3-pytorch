@@ -4,7 +4,7 @@ from utils.misc import Conv2dAct, InvertedResidual, _make_divisible, _init_weigh
 
 
 class MobileNetV3L(nn.Module):
-
+    """ [https://arxiv.org/abs/1905.02244] """
     def __init__(self, width_mult, num_classes=1000, dropout=0.2, init_weight=True):
         super().__init__()
         if init_weight:
@@ -61,7 +61,7 @@ class MobileNetV3L(nn.Module):
 
 
 class MobileNetV3S(nn.Module):
-
+    """ [https://arxiv.org/abs/1905.02244] """
     def __init__(self, width_mult, num_classes=1000, dropout=0.2, init_weight=True):
         super().__init__()
         if init_weight:
