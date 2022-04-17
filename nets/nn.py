@@ -19,8 +19,8 @@ class MobileNetV3L(nn.Module):
         _mid[:] = list(map(_make_divisible, map(_mult, _mid)))
         _out[:] = list(map(_make_divisible, map(_mult, _out)))
 
-        self._layers = [Conv2dAct(3, _inp[0], 3, 2, act=nn.Hardswish)]
-        self._layers.extend([
+        self.layers = [Conv2dAct(3, _inp[0], 3, 2, act=nn.Hardswish)]
+        self.layers.extend([
             InvertedResidual(_inp[0], _mid[0], _out[0], 3, 1, False, nn.ReLU),
             InvertedResidual(_inp[1], _mid[1], _out[1], 3, 2, False, nn.ReLU),  # C1 1/2
             InvertedResidual(_inp[2], _mid[2], _out[2], 3, 1, False, nn.ReLU),
@@ -76,8 +76,8 @@ class MobileNetV3S(nn.Module):
         _mid[:] = list(map(_make_divisible, map(_mult, _mid)))
         _out[:] = list(map(_make_divisible, map(_mult, _out)))
 
-        self._layers = [Conv2dAct(3, _inp[0], 3, 2, act=nn.Hardswish)]
-        self._layers.extend([
+        self.layers = [Conv2dAct(3, _inp[0], 3, 2, act=nn.Hardswish)]
+        self.layers.extend([
             InvertedResidual(_inp[0], _mid[0], _out[0], 3, 2, True, nn.ReLU),  # C1 1/2
 
             InvertedResidual(_inp[1], _mid[1], _out[1], 3, 2, False, nn.ReLU),  # C2 1/4
