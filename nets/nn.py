@@ -19,8 +19,8 @@ class MobileNetV3L(nn.Module):
         _mid[:] = list(map(_make_divisible, map(_mult, _mid)))
         _out[:] = list(map(_make_divisible, map(_mult, _out)))
 
-        self.layers = [Conv2dAct(3, _inp[0], 3, 2, act=nn.Hardswish)]
-        self.layers.extend([
+        self._layers = [Conv2dAct(3, _inp[0], 3, 2, act=nn.Hardswish)]
+        self._layers.extend([
             InvertedResidual(_inp[0], _mid[0], _out[0], 3, 1, False, nn.ReLU),
             InvertedResidual(_inp[1], _mid[1], _out[1], 3, 2, False, nn.ReLU),  # C1 1/2
             InvertedResidual(_inp[2], _mid[2], _out[2], 3, 1, False, nn.ReLU),
@@ -42,8 +42,8 @@ class MobileNetV3L(nn.Module):
             InvertedResidual(_inp[14], _mid[14], _out[14], 5, 1, True, nn.Hardswish),
         ])
 
-        self.layers.append(Conv2dAct(_inp[15], _out[15], act=nn.Hardswish))
-        self.features = nn.Sequential(*self.layers)
+        self._layers.append(Conv2dAct(_inp[15], _out[15], act=nn.Hardswish))
+        self.features = nn.Sequential(*self._layers)
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.classifier = nn.Sequential(
             nn.Linear(in_features=_out[15], out_features=_out[16]),
@@ -76,8 +76,8 @@ class MobileNetV3S(nn.Module):
         _mid[:] = list(map(_make_divisible, map(_mult, _mid)))
         _out[:] = list(map(_make_divisible, map(_mult, _out)))
 
-        self.layers = [Conv2dAct(3, _inp[0], 3, 2, act=nn.Hardswish)]
-        self.layers.extend([
+        self._layers = [Conv2dAct(3, _inp[0], 3, 2, act=nn.Hardswish)]
+        self._layers.extend([
             InvertedResidual(_inp[0], _mid[0], _out[0], 3, 2, True, nn.ReLU),  # C1 1/2
 
             InvertedResidual(_inp[1], _mid[1], _out[1], 3, 2, False, nn.ReLU),  # C2 1/4
@@ -95,8 +95,8 @@ class MobileNetV3S(nn.Module):
 
         ])
 
-        self.layers.append(Conv2dAct(_inp[11], _out[11], 1, 2, act=nn.Hardswish))  # C5 1/32
-        self.features = nn.Sequential(*self.layers)
+        self._layers.append(Conv2dAct(_inp[11], _out[11], 1, 2, act=nn.Hardswish))  # C5 1/32
+        self.features = nn.Sequential(*self._layers)
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.classifier = nn.Sequential(
             nn.Linear(in_features=_out[11], out_features=_out[12]),
