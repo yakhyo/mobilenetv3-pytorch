@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from utils.misc import Conv2dAct, InvertedResidual, _make_divisible, _init_weight
+from utils_dir.misc import Conv2dAct, InvertedResidual, _make_divisible, _init_weight
 
 
 class MobileNetV3L(nn.Module):
