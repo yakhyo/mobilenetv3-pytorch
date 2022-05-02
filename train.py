@@ -127,9 +127,9 @@ def main(args):
     utils.init_distributed_mode(args)
     print(args)
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if not torch.cuda.is_available():
-        raise RuntimeError('COULD NOT FOUND GPU MACHINE')
+        raise RuntimeError("COULD NOT FOUND GPU MACHINE")
 
     torch.backends.cudnn.benchmark = True
 
@@ -148,7 +148,7 @@ def main(args):
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
     parameters = utils.add_weight_decay(model)
-    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+    criterion = nn.PolyLoss(label_smoothing=args.label_smoothing)
     optimizer = optim.RMSprop(parameters, lr=args.lr, momentum=args.momentum, weight_decay=1e-5, eps=0.0316, alpha=0.9)
     scheduler = StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
 
@@ -160,12 +160,12 @@ def main(args):
     model_ema = nn.EMA(model_without_ddp, decay=0.9999)
 
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'])
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        scheduler.load_state_dict(checkpoint['scheduler'])
-        args.start_epoch = checkpoint['epoch'] + 1
-        model_ema.model.load_state_dict(checkpoint['model_ema'])
+        checkpoint = torch.load(args.resume, map_location="cpu")
+        model_without_ddp.load_state_dict(checkpoint["model"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        scheduler.load_state_dict(checkpoint["scheduler"])
+        args.start_epoch = checkpoint["epoch"] + 1
+        model_ema.model.load_state_dict(checkpoint["model_ema"])
 
     print("Start training")
     start_time = time.time()
@@ -177,17 +177,17 @@ def main(args):
         scheduler.step()
         evaluate(model, criterion, test_loader, device=device)
         _, acc1, acc5 = evaluate(model_ema.model, criterion, test_loader, device=device, log_suffix='EMA')
-        checkpoint = {'model': model_without_ddp.state_dict(),
-                      'model_ema': model_ema.model.state_dict(),
-                      'optimizer': optimizer.state_dict(),
-                      'scheduler': scheduler.state_dict(),
-                      'epoch': epoch,
-                      'args': args,
+        checkpoint = {"model": model_without_ddp.state_dict(),
+                      "model_ema": model_ema.model.state_dict(),
+                      "optimizer": optimizer.state_dict(),
+                      "scheduler": scheduler.state_dict(),
+                      "epoch": epoch,
+                      "args": args,
                       }
 
-        torch.save(checkpoint, 'weights/last.pth')
+        torch.save(checkpoint, "weights/last.pth")
         if acc1 > best:
-            torch.save(checkpoint, 'weights/best.pth')
+            torch.save(checkpoint, "weights/best.pth")
         best = max(acc1, best)
 
     total_time = time.time() - start_time
@@ -211,10 +211,6 @@ def get_args_parser():
     parser.add_argument("--weight-decay", default=1e-4, type=float, help="weight decay")
 
     parser.add_argument("--label-smoothing", default=0.0, type=float, help="label smoothing (default: 0.0)")
-
-    parser.add_argument("--lr-warmup-epochs", default=0, type=int, help="the number of epochs to warmup (default: 0)")
-    parser.add_argument("--lr-warmup-method", default="constant", type=str, help="the warmup method")
-    parser.add_argument("--lr-warmup-decay", default=0.01, type=float, help="the decay for lr")
     parser.add_argument("--lr-step-size", default=30, type=int, help="decrease lr every step-size epochs")
     parser.add_argument("--lr-gamma", default=0.1, type=float, help="decrease lr by a factor of lr-gamma")
 

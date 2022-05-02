@@ -1,22 +1,13 @@
-import copy
 import datetime
-import errno
-import hashlib
 import os
 import time
-from collections import defaultdict, deque, OrderedDict
-from typing import List, Optional, Tuple
+from collections import defaultdict, deque
 
 import torch
-import torch.distributed as dist
-from copy import deepcopy
-import itertools
+import torch.distributed as distributed
 
 
 class SmoothedValue:
-    """Track a series of values and provide access to smoothed values over a
-    window or the global series average.
-    """
 
     def __init__(self, window_size=20, fmt=None):
         if fmt is None:
@@ -32,9 +23,6 @@ class SmoothedValue:
         self.total += value * n
 
     def synchronize_between_processes(self):
-        """
-        Warning: does not synchronize the deque!
-        """
         t = reduce_across_processes([self.count, self.total])
         t = t.tolist()
         self.count = int(t[0])
@@ -158,32 +146,6 @@ class MetricLogger:
         print(f"{header} Total time: {total_time_str}")
 
 
-def accuracy(output, target, topk):
-    with torch.inference_mode():
-        maxk = max(topk)
-        batch_size = target.size(0)
-        if target.ndim == 2:
-            target = target.max(dim=1)[1]
-
-        _, pred = output.topk(maxk, 1, True, True)
-        pred = pred.t()
-        correct = pred.eq(target[None])
-
-        res = []
-        for k in topk:
-            correct_k = correct[:k].flatten().sum(dtype=torch.float32)
-            res.append(correct_k * (100.0 / batch_size))
-        return res
-
-
-def mkdir(path):
-    try:
-        os.makedirs(path)
-    except OSError as e:
-        if e.errno != errno.EEXIST:
-            raise
-
-
 def setup_for_distributed(is_master):
     """
     This function disables printing when not in master process
@@ -201,32 +163,11 @@ def setup_for_distributed(is_master):
 
 
 def is_dist_avail_and_initialized():
-    if not dist.is_available():
+    if not distributed.is_available():
         return False
-    if not dist.is_initialized():
+    if not distributed.is_initialized():
         return False
     return True
-
-
-def get_world_size():
-    if not is_dist_avail_and_initialized():
-        return 1
-    return dist.get_world_size()
-
-
-def get_rank():
-    if not is_dist_avail_and_initialized():
-        return 0
-    return dist.get_rank()
-
-
-def is_main_process():
-    return get_rank() == 0
-
-
-def save_on_master(*args, **kwargs):
-    if is_main_process():
-        torch.save(*args, **kwargs)
 
 
 def init_distributed_mode(args):
@@ -262,9 +203,27 @@ def reduce_across_processes(val):
         return torch.tensor(val)
 
     t = torch.tensor(val, device="cuda")
-    dist.barrier()
-    dist.all_reduce(t)
+    distributed.barrier()
+    distributed.all_reduce(t)
     return t
+
+
+def accuracy(output, target, topk):
+    with torch.inference_mode():
+        maxk = max(topk)
+        batch_size = target.size(0)
+        if target.ndim == 2:
+            target = target.max(dim=1)[1]
+
+        _, pred = output.topk(maxk, 1, True, True)
+        pred = pred.t()
+        correct = pred.eq(target[None])
+
+        res = []
+        for k in topk:
+            correct_k = correct[:k].flatten().sum(dtype=torch.float32)
+            res.append(correct_k * (100.0 / batch_size))
+        return res
 
 
 def add_weight_decay(net, weight_decay=1e-5):
