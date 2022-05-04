@@ -1,6 +1,7 @@
+from copy import deepcopy
+
 import torch
 import torch.nn.functional as F
-from copy import deepcopy
 
 
 def _pad(kernel_size, dilation=1):
@@ -258,8 +259,7 @@ class CrossEntropyLoss:
 
 
 class RMSprop(torch.optim.Optimizer):
-
-    def __init__(self, params, lr=1e-2, alpha=0.9, eps=1e-10, weight_decay=0, momentum=0., centered=False,
+    def __init__(self, params, lr=1e-2, alpha=0.9, eps=1e-7, weight_decay=0, momentum=0., centered=False,
                  decoupled_decay=False, lr_in_momentum=True):
 
         defaults = dict(lr=lr, momentum=momentum, alpha=alpha, eps=eps, centered=centered, weight_decay=weight_decay,
@@ -326,6 +326,49 @@ class RMSprop(torch.optim.Optimizer):
                     p.data.addcdiv_(grad, avg, value=-group['lr'])
 
         return loss
+
+
+class StepLR:
+
+    def __init__(self, optimizer, step_size, gamma=1., warmup_epochs=0, warmup_lr_init=0):
+
+        self.optimizer = optimizer
+        self.step_size = step_size
+        self.gamma = gamma
+        self.warmup_epochs = warmup_epochs
+        self.warmup_lr_init = warmup_lr_init
+
+        for group in self.optimizer.param_groups:
+            group.setdefault('initial_lr', group['lr'])
+
+        self.base_lr_values = [group['initial_lr'] for group in self.optimizer.param_groups]
+        self.update_groups(self.base_lr_values)
+
+        if self.warmup_epochs:
+            self.warmup_steps = [(v - warmup_lr_init) / self.warmup_epochs for v in self.base_lr_values]
+            self.update_groups(self.warmup_lr_init)
+        else:
+            self.warmup_steps = [1 for _ in self.base_lr_values]
+
+    def state_dict(self):
+        return {key: value for key, value in self.__dict__.items() if key != 'optimizer'}
+
+    def load_state_dict(self, state_dict):
+        self.__dict__.update(state_dict)
+
+    def step(self, epoch):
+        if epoch < self.warmup_epochs:
+            values = [self.warmup_lr_init + epoch * s for s in self.warmup_steps]
+        else:
+            values = [base_lr * (self.gamma ** (epoch // self.step_size)) for base_lr in self.base_lr_values]
+        if values is not None:
+            self.update_groups(values)
+
+    def update_groups(self, values):
+        if not isinstance(values, (list, tuple)):
+            values = [values] * len(self.optimizer.param_groups)
+        for param_group, value in zip(self.optimizer.param_groups, values):
+            param_group['lr'] = value
 
 
 def mobilenet_v3_large(width_mult: float = 1.0, **kwargs) -> MobileNetV3L:
