@@ -171,6 +171,9 @@ def is_dist_avail_and_initialized():
 
 
 def init_distributed_mode(args):
+    print('RANK' in os.environ)
+    print('SLURM_PROCID' in os.environ)
+    print(hasattr(args, 'rank'))
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         args.rank = int(os.environ["RANK"])
         args.world_size = int(os.environ["WORLD_SIZE"])

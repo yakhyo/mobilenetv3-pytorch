@@ -5,7 +5,6 @@ import time
 import torch
 import torch.utils.data
 
-from torch.optim.lr_scheduler import StepLR
 from torch import optim
 from torchvision.transforms.functional import InterpolationMode
 
@@ -117,11 +116,7 @@ def load_data(traindir, valdir, args):
         pin_memory=True,
     )
     test_loader = torch.utils.data.DataLoader(
-        test_dataset,
-        batch_size=args.batch_size,
-        sampler=test_sampler,
-        num_workers=args.workers,
-        pin_memory=True
+        test_dataset, batch_size=args.batch_size, sampler=test_sampler, num_workers=args.workers, pin_memory=True
     )
 
     return train_dataset, test_dataset, train_loader, test_loader, train_sampler, test_sampler
@@ -152,8 +147,8 @@ def main(args):
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
     parameters = utils.add_weight_decay(model)
-    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
-    optimizer = nn.RMSprop(parameters, lr=args.lr, momentum=args.momentum, weight_decay=1e-5, eps=1e-3, alpha=0.9) # eps=0.0316,
+    criterion = nn.PolyLoss(label_smoothing=args.label_smoothing)
+    optimizer = optim.RMSprop(parameters, lr=args.lr, momentum=args.momentum, weight_decay=1e-5, eps=0.0316, alpha=0.9)
     scheduler = nn.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
 
     model_without_ddp = model
@@ -178,7 +173,7 @@ def main(args):
         if args.distributed:
             train_sampler.set_epoch(epoch)
         train_one_epoch(model, criterion, optimizer, train_loader, device, epoch, args, model_ema)
-        scheduler.step(epoch+1)
+        scheduler.step()
         evaluate(model, criterion, test_loader, device=device)
         _, acc1, acc5 = evaluate(model_ema.model, criterion, test_loader, device=device, log_suffix='EMA')
         checkpoint = {"model": model_without_ddp.state_dict(),
@@ -204,11 +199,11 @@ def get_args_parser():
 
     parser = argparse.ArgumentParser(description="MobileNetV3 Large/Small training code")
 
-    parser.add_argument("--data-path", default="../../Dataset/IMAGENET/", type=str, help="dataset path")
+    parser.add_argument("--data-path", default="../../Projects/Datasets/IMAGENET/", type=str, help="dataset path")
 
     parser.add_argument("--batch-size", default=32, type=int, help="images per gpu, total = $NGPU x batch_size")
     parser.add_argument("--epochs", default=90, type=int, help="number of total epochs to run")
-    parser.add_argument("--workers", default=16, type=int, help="number of data loading workers")
+    parser.add_argument("--workers", default=8, type=int, help="number of data loading workers")
 
     parser.add_argument("--lr", default=0.1, type=float, help="initial learning rate")
     parser.add_argument("--momentum", default=0.9, type=float, help="momentum")
