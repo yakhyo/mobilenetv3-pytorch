@@ -56,17 +56,14 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
         if args.rank == 0 and batch_idx % args.print_freq == 0:
             lrl = [param_group['lr'] for param_group in optimizer.param_groups]
             lr = sum(lrl) / len(lrl)
-            print('Epoch: [{epoch}][{batch_idx}/{len_loader}] '
-                  'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
-                  'LR: {lr_m:.3e} '
-                  'Loss: {loss.val:>7.4f} ({loss.avg:>6.4f})  '
-                  'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '
-                  'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})'.format(
-                epoch=epoch, batch_idx=batch_idx, len_loader=len(data_loader), lr_m=lr,
-                batch_time=batch_time_m, loss=losses_m, top1=top1_m, top5=top5_m))
+            print(f'Epoch: [{epoch}][{batch_idx}/{len(data_loader)}] '
+                  f'LR: {lr:.7f} '
+                  f'Loss: {losses_m.val:.4f} ({losses_m.avg:.4f})  '
+                  f'Acc@1: {top1_m.val:.4f} ({top1_m.avg:.4f})  '
+                  f'Acc@5: {top5_m.val:.4f} ({top5_m.avg:.4f})')
 
 
-def evaluate(model, criterion, train_loader, device, print_freq=100, log_suffix=""):
+def validate(model, criterion, train_loader, device, print_freq=100, log_suffix=""):
     batch_time_m = AverageMeter()
     losses_m = AverageMeter()
     top1_m = AverageMeter()
@@ -94,7 +91,7 @@ def evaluate(model, criterion, train_loader, device, print_freq=100, log_suffix=
 
             batch_time_m.update(time.time() - end)
             losses_m.update(reduced_loss.item(), batch_size)
-            top1_m.update(acc1.item(), batch_size)
+            top1_m.update(acc1.item(), output.size(0))
             top5_m.update(acc5.item(), batch_size)
 
             end = time.time()
@@ -213,8 +210,8 @@ def main(args):
 
         train_one_epoch(model, criterion, optimizer, train_loader, device, epoch, args, model_ema)
         scheduler.step(epoch + 1)
-        # acc1, acc5 = evaluate(model, criterion, test_loader, device=device)
-        _, acc1, acc5 = evaluate(model_ema.model, criterion, test_loader, device=device, log_suffix='EMA')
+        # acc1, acc5 = validate(model, criterion, test_loader, device=device)
+        _, acc1, acc5 = validate(model_ema.model, criterion, test_loader, device=device, log_suffix='EMA')
         checkpoint = {
             'model': model_without_ddp.state_dict(),
             'model_ema': model_ema.model.state_dict(),
