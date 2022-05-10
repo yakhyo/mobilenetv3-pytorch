@@ -56,14 +56,15 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
         if args.rank == 0 and batch_idx % args.print_freq == 0:
             lrl = [param_group['lr'] for param_group in optimizer.param_groups]
             lr = sum(lrl) / len(lrl)
-            print(f'Epoch: [{epoch}][{batch_idx}/{len(data_loader)}] '
-                  f'LR: {lr:.7f} '
+            print(f'Train: [{epoch:>4d}][{batch_idx}/{len(data_loader)}] '
                   f'Loss: {losses_m.val:.4f} ({losses_m.avg:.4f})  '
-                  f'Acc@1: {top1_m.val:.4f} ({top1_m.avg:.4f})  '
+                  f'Time: {batch_time_m.val:.3f}s, {batch_size * args.world_size / batch_time_m.val:>4.2f}/s '
+                  f'LR: {lr:.7f} '
+                  f'Acc@1: {top1_m.val:.4f} ({top1_m.avg:.4f}) '
                   f'Acc@5: {top5_m.val:.4f} ({top5_m.avg:.4f})')
 
 
-def validate(model, criterion, train_loader, device, print_freq=100, log_suffix=""):
+def validate(model, criterion, train_loader, device, print_freq=10, log_suffix=""):
     batch_time_m = AverageMeter()
     losses_m = AverageMeter()
     top1_m = AverageMeter()
@@ -91,25 +92,20 @@ def validate(model, criterion, train_loader, device, print_freq=100, log_suffix=
 
             batch_time_m.update(time.time() - end)
             losses_m.update(reduced_loss.item(), batch_size)
-            top1_m.update(acc1.item(), output.size(0))
+            top1_m.update(acc1.item(), batch_size)
             top5_m.update(acc5.item(), batch_size)
 
             end = time.time()
             if args.rank == 0 and batch_idx % print_freq == 0:
                 log_name = 'Test' + log_suffix
-                print('{0}: [{1:>4d}/{2}]  '
-                      'Time: {batch_time.val:.3f} ({batch_time.avg:.3f})  '
-                      'Loss: {loss.val:>7.4f} ({loss.avg:>6.4f})  '
-                      'Acc@1: {top1.val:>7.4f} ({top1.avg:>7.4f})  '
-                      'Acc@5: {top5.val:>7.4f} ({top5.avg:>7.4f})'.format(log_name,
-                                                                          batch_idx,
-                                                                          last_idx,
-                                                                          batch_time=batch_time_m,
-                                                                          loss=losses_m,
-                                                                          top1=top1_m,
-                                                                          top5=top5_m))
+                print(f'Test_{log_suffix}: [{batch_idx:>4d}/{last_idx}]  '
+                      f'Time: {batch_time_m.val:.3f} ({batch_time_m.avg:.3f})  '
+                      f'Loss: {losses_m.val:>7.4f} ({losses_m.avg:>6.4f})  '
+                      f'Acc@1: {top1_m.val:>7.4f} ({top1_m.avg:>7.4f})  '
+                      f'Acc@5: {top5_m.val:>7.4f} ({top5_m.avg:>7.4f})')
 
     # metrics = OrderedDict([('loss', losses_m.avg), ('top1', top1_m.avg), ('top5', top5_m.avg)])
+    print(f'Acc@1: {top1_m.avg:>7.4f} Acc@5: {top5_m.avg:>7.4f}')
 
     return losses_m.avg, top1_m.avg, top5_m.avg
 

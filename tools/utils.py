@@ -59,13 +59,22 @@ def init_distributed_mode(args):
 
 
 def accuracy(output, target, topk=(1,)):
-    """ Computes the accuracy over the k top predictions for the specified values of k """
-    maxk = min(max(topk), output.size()[1])
-    batch_size = target.size(0)
-    _, pred = output.topk(maxk, 1, True, True)
-    pred = pred.t()
-    correct = pred.eq(target.reshape(1, -1).expand_as(pred))
-    return [correct[:min(k, maxk)].reshape(-1).float().sum(0) * 100. / batch_size for k in topk]
+    """Computes the accuracy over the k top predictions for the specified values of k"""
+    with torch.inference_mode():
+        maxk = max(topk)
+        batch_size = target.size(0)
+        if target.ndim == 2:
+            target = target.max(dim=1)[1]
+
+        _, pred = output.topk(maxk, 1, True, True)
+        pred = pred.t()
+        correct = pred.eq(target[None])
+
+        res = []
+        for k in topk:
+            correct_k = correct[:k].flatten().sum(dtype=torch.float32)
+            res.append(correct_k * (100.0 / batch_size))
+        return res
 
 
 def add_weight_decay(net, weight_decay=1e-5):
