@@ -1,0 +1,1 @@
+torchrun --nproc_per_node=2 main.py --epochs 300  --batch-size 128 --lr 0.064  --lr-step-size 2 --lr-gamma 0.973 --random-erase 0.2

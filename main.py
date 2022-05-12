@@ -1,22 +1,21 @@
-import datetime
 import os
 import time
+import datetime
+from copy import deepcopy
 
 import torch
 import torch.utils.data
 
 from torchvision.transforms.functional import InterpolationMode
-
-from nets import nn
 from torchvision.transforms import transforms, autoaugment
 
+from nets import nn
 from tools import utils, dataset
 from tools.utils import AverageMeter
 
 
 def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema=None):
     model.train()
-
     batch_time_m = AverageMeter()
     losses_m = AverageMeter()
     lr_m = AverageMeter()
@@ -32,16 +31,13 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-
         model_ema.update_parameters(model)
 
-        acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+        acc1, acc5 = utils.accuracy(output, target, top_k=(1, 5))
         batch_size = image.shape[0]
 
         if args.distributed:
             reduced_loss = utils.reduce_tensor(loss.data, args.world_size)
-            acc1 = utils.reduce_tensor(acc1, args.world_size)
-            acc5 = utils.reduce_tensor(acc5, args.world_size)
         else:
             reduced_loss = loss.data
 
@@ -53,10 +49,10 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
         batch_time_m.update(batch_size / (time.time() - start_time))
         lr_m.update(optimizer.param_groups[0]['lr'])
 
-        if args.rank == 0 and batch_idx % args.print_freq == 0:
+        if args.local_rank == 0 and batch_idx % args.interval == 0:
             lrl = [param_group['lr'] for param_group in optimizer.param_groups]
             lr = sum(lrl) / len(lrl)
-            print(f'Train: [{epoch:>4d}][{batch_idx}/{len(data_loader)}] '
+            print(f'Train: [{epoch:>3d}][{batch_idx:>4d}/{len(data_loader)}] '
                   f'Loss: {losses_m.val:.4f} ({losses_m.avg:.4f})  '
                   f'Time: {batch_time_m.val:.3f}s, {batch_size * args.world_size / batch_time_m.val:>4.2f}/s '
                   f'LR: {lr:.7f} '
@@ -64,7 +60,7 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
                   f'Acc@5: {top5_m.val:.4f} ({top5_m.avg:.4f})')
 
 
-def validate(model, criterion, train_loader, device, print_freq=10, log_suffix=""):
+def validate(model, criterion, train_loader, device, log_suffix=""):
     batch_time_m = AverageMeter()
     losses_m = AverageMeter()
     top1_m = AverageMeter()
@@ -78,7 +74,7 @@ def validate(model, criterion, train_loader, device, print_freq=10, log_suffix="
             target = target.to(device, non_blocking=True)
             output = model(image)
             loss = criterion(output, target)
-            acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+            acc1, acc5 = utils.accuracy(output, target, top_k=(1, 5))
             batch_size = image.shape[0]
 
             if args.distributed:
@@ -96,15 +92,13 @@ def validate(model, criterion, train_loader, device, print_freq=10, log_suffix="
             top5_m.update(acc5.item(), batch_size)
 
             end = time.time()
-            if args.rank == 0 and batch_idx % print_freq == 0:
-                log_name = 'Test' + log_suffix
+            if args.local_rank == 0 and batch_idx % args.interval == 0:
                 print(f'Test_{log_suffix}: [{batch_idx:>4d}/{last_idx}]  '
                       f'Time: {batch_time_m.val:.3f} ({batch_time_m.avg:.3f})  '
                       f'Loss: {losses_m.val:>7.4f} ({losses_m.avg:>6.4f})  '
                       f'Acc@1: {top1_m.val:>7.4f} ({top1_m.avg:>7.4f})  '
                       f'Acc@5: {top5_m.val:>7.4f} ({top5_m.avg:>7.4f})')
 
-    # metrics = OrderedDict([('loss', losses_m.avg), ('top1', top1_m.avg), ('top5', top5_m.avg)])
     print(f'Acc@1: {top1_m.avg:>7.4f} Acc@5: {top5_m.avg:>7.4f}')
 
     return losses_m.avg, top1_m.avg, top5_m.avg
@@ -180,11 +174,15 @@ def main(args):
     parameters = utils.add_weight_decay(model, weight_decay=args.weight_decay)
     criterion = nn.CrossEntropyLoss()
     optimizer = nn.RMSprop(parameters, lr=args.lr, alpha=0.9, eps=1e-3, weight_decay=0, momentum=args.momentum)
-    scheduler = nn.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma)
+    scheduler = nn.StepLR(optimizer,
+                          step_size=args.lr_step_size,
+                          gamma=args.lr_gamma,
+                          warmup_epochs=args.warmup_epochs,
+                          warmup_lr_init=args.warmup_lr_init)
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
         model_without_ddp = model.module
 
     model_ema = nn.EMA(model_without_ddp, decay=0.9999)
@@ -206,7 +204,6 @@ def main(args):
 
         train_one_epoch(model, criterion, optimizer, train_loader, device, epoch, args, model_ema)
         scheduler.step(epoch + 1)
-        # acc1, acc5 = validate(model, criterion, test_loader, device=device)
         _, acc1, acc5 = validate(model_ema.model, criterion, test_loader, device=device, log_suffix='EMA')
         checkpoint = {
             'model': model_without_ddp.state_dict(),
@@ -216,10 +213,15 @@ def main(args):
             'epoch': epoch,
             'args': args,
         }
+        checkpoint_model = {
+            'model': deepcopy(model_ema.model).half()
+        }
 
         torch.save(checkpoint, 'weights/last.pth')
+        torch.save(checkpoint_model, 'weights/last_m.pth')
         if acc1 > best:
             torch.save(checkpoint, 'weights/best.pth')
+            torch.save(checkpoint_model, 'weights/best_m.pth')
         best = max(acc1, best)
 
     total_time = time.time() - start_time
@@ -242,19 +244,17 @@ def get_args_parser():
     parser.add_argument("--momentum", default=0.9, type=float, help="momentum")
     parser.add_argument("--weight-decay", default=1e-4, type=float, help="weight decay")
 
+    parser.add_argument("--warmup-epochs", default=0, type=int, help="number of warmup epochs")
+    parser.add_argument("--warmup-lr-init", default=0, type=float, help="warmup learning rate init")
     parser.add_argument("--lr-step-size", default=30, type=int, help="decrease lr every step-size epochs")
     parser.add_argument("--lr-gamma", default=0.1, type=float, help="decrease lr by a factor of lr-gamma")
 
-    parser.add_argument("--print-freq", default=10, type=int, help="print frequency")
+    parser.add_argument("--interval", default=10, type=int, help="print frequency")
     parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
     parser.add_argument("--start-epoch", default=0, type=int, help="start epoch")
 
     parser.add_argument("--sync-bn", help="Use sync batch norm", action="store_true")
     parser.add_argument("--random-erase", default=0.0, type=float, help="random erasing probability")
-
-    # distributed training parameters
-    parser.add_argument("--world-size", default=1, type=int, help="number of distributed processes")
-    parser.add_argument("--dist-url", default="env://", type=str, help="url used to set up distributed training")
 
     return parser
 
