@@ -40,6 +40,7 @@ def accuracy(output, target, top_k):
 
 
 def reduce_tensor(tensor, n):
+    """ Getting the average of tensors over multiple GPU devices """
     rt = tensor.clone()
     distributed.all_reduce(rt, op=distributed.ReduceOp.SUM)
     rt /= n
@@ -47,6 +48,7 @@ def reduce_tensor(tensor, n):
 
 
 def add_weight_decay(net, weight_decay=1e-5):
+    """ Applying weight decay to only weights, not biases """
     decay = []
     no_decay = []
     for name, param in net.named_parameters():
@@ -60,9 +62,7 @@ def add_weight_decay(net, weight_decay=1e-5):
 
 
 def setup_for_distributed(is_master):
-    """
-    This function disables printing when not in master process
-    """
+    """ This function disables printing when not in master process """
     import builtins as __builtin__
 
     builtin_print = __builtin__.print
@@ -75,7 +75,11 @@ def setup_for_distributed(is_master):
     __builtin__.print = print
 
 
+""" The order of `def setup_for_distributed()` and `def init_distributed_mode()` must be kept """
+
+
 def init_distributed_mode(args):
+    """ Initializing distributed mode """
     args.distributed = int(os.getenv('WORLD_SIZE', 1)) > 1
     if args.distributed:
         args.local_rank = int(os.environ["RANK"])
