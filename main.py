@@ -9,18 +9,94 @@ import torch.utils.data
 from torchvision.transforms.functional import InterpolationMode
 from torchvision.transforms import transforms, autoaugment
 
-from nets import nn
-from tools import utils, dataset
-from tools.utils import AverageMeter
+import utils
+import nets as nn
+
+
+def get_args_parser():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="MobileNetV3 Large/Small training code")
+
+    parser.add_argument("--data-path", default="../../Projects/Datasets/IMAGENET/", type=str, help="dataset path")
+
+    parser.add_argument("--batch-size", default=32, type=int, help="images per gpu, total = num_GPU x batch_size")
+    parser.add_argument("--epochs", default=90, type=int, help="number of total epochs to run")
+    parser.add_argument("--workers", default=8, type=int, help="number of data loading workers")
+
+    parser.add_argument("--lr", default=0.1, type=float, help="initial learning rate")
+    parser.add_argument("--momentum", default=0.9, type=float, help="momentum")
+    parser.add_argument("--weight-decay", default=1e-4, type=float, help="weight decay")
+
+    parser.add_argument("--warmup-epochs", default=0, type=int, help="number of warmup epochs")
+    parser.add_argument("--warmup-lr-init", default=0, type=float, help="warmup learning rate init")
+    parser.add_argument("--lr-step-size", default=30, type=int, help="decrease lr every step-size epochs")
+    parser.add_argument("--lr-gamma", default=0.1, type=float, help="decrease lr by a factor of lr-gamma")
+
+    parser.add_argument("--interval", default=10, type=int, help="print frequency")
+    parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
+    parser.add_argument("--start-epoch", default=0, type=int, help="start epoch")
+
+    parser.add_argument("--sync-bn", help="Use sync batch norm", action="store_true")
+    parser.add_argument("--random-erase", default=0.0, type=float, help="random erasing probability")
+
+    parser.add_argument("--world-size", default=1, type=int, help="number of distributed processes")
+    parser.add_argument("--local-rank", default=0, type=int, help="number of distributed processes")
+
+    parser = parser.parse_args()
+    return parser
+
+
+def load_data(args):
+    """ Preparing the dataset and Data sampler """
+    print('Loading Data')
+    print('Loading Training Data')
+    st = time.time()
+    train_dataset = utils.dataset.ImageFolder(
+        os.path.join(args.data_path, "train"),
+        transform=transforms.Compose([
+            transforms.RandomResizedCrop(size=224, interpolation=InterpolationMode.BILINEAR),
+            transforms.RandomHorizontalFlip(0.5),
+            autoaugment.AutoAugment(interpolation=InterpolationMode.BILINEAR),
+            transforms.PILToTensor(),
+            transforms.ConvertImageDtype(torch.float),
+            transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            transforms.RandomErasing(args.random_erase),
+        ])
+    )
+    print(f'Done! Took {time.time() - st}')
+
+    print('Loading Validation Data')
+    st = time.time()
+    test_dataset = utils.dataset.ImageFolder(
+        os.path.join(args.data_path, "val"),
+        transform=transforms.Compose([
+            transforms.Resize(size=256, interpolation=InterpolationMode.BILINEAR),
+            transforms.CenterCrop(size=224),
+            transforms.PILToTensor(),
+            transforms.ConvertImageDtype(torch.float),
+            transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+        ])
+    )
+    print(f'Done! Took {time.time() - st}')
+
+    if args.distributed:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+        test_sampler = torch.utils.data.distributed.DistributedSampler(test_dataset, shuffle=False)
+    else:
+        train_sampler = torch.utils.data.RandomSampler(train_dataset)
+        test_sampler = torch.utils.data.SequentialSampler(test_dataset)
+
+    return train_dataset, test_dataset, train_sampler, test_sampler
 
 
 def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, args, model_ema=None):
     model.train()
-    batch_time_m = AverageMeter()
-    losses_m = AverageMeter()
-    lr_m = AverageMeter()
-    top1_m = AverageMeter()
-    top5_m = AverageMeter()
+    batch_time_m = utils.AverageMeter()
+    losses_m = utils.AverageMeter()
+    lr_m = utils.AverageMeter()
+    top1_m = utils.AverageMeter()
+    top5_m = utils.AverageMeter()
 
     for batch_idx, (image, target) in enumerate(data_loader):
         start_time = time.time()
@@ -60,11 +136,11 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
                   f'Acc@5: {top5_m.val:.4f} ({top5_m.avg:.4f})')
 
 
-def validate(model, criterion, train_loader, device, log_suffix=""):
-    batch_time_m = AverageMeter()
-    losses_m = AverageMeter()
-    top1_m = AverageMeter()
-    top5_m = AverageMeter()
+def validate(model, criterion, train_loader, device, args, log_suffix=""):
+    batch_time_m = utils.AverageMeter()
+    losses_m = utils.AverageMeter()
+    top1_m = utils.AverageMeter()
+    top5_m = utils.AverageMeter()
 
     end = time.time()
     last_idx = len(train_loader) - 1
@@ -104,50 +180,11 @@ def validate(model, criterion, train_loader, device, log_suffix=""):
     return losses_m.avg, top1_m.avg, top5_m.avg
 
 
-def load_data(args):
-    print('Loading Data')
-    print('Loading Training Data')
-    st = time.time()
-    train_dataset = dataset.ImageFolder(
-        os.path.join(args.data_path, "train"),
-        transform=transforms.Compose([
-            transforms.RandomResizedCrop(size=224, interpolation=InterpolationMode.BILINEAR),
-            transforms.RandomHorizontalFlip(0.5),
-            autoaugment.AutoAugment(interpolation=InterpolationMode.BILINEAR),
-            transforms.PILToTensor(),
-            transforms.ConvertImageDtype(torch.float),
-            transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-            transforms.RandomErasing(args.random_erase),
-        ])
-    )
-    print(f'Took {time.time() - st}')
-
-    print('Loading Validation Data')
-    test_dataset = dataset.ImageFolder(
-        os.path.join(args.data_path, "val"),
-        transform=transforms.Compose([
-            transforms.Resize(size=256, interpolation=InterpolationMode.BILINEAR),
-            transforms.CenterCrop(size=224),
-            transforms.PILToTensor(),
-            transforms.ConvertImageDtype(torch.float),
-            transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        ])
-    )
-
-    if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-        test_sampler = torch.utils.data.distributed.DistributedSampler(test_dataset, shuffle=False)
-    else:
-        train_sampler = torch.utils.data.RandomSampler(train_dataset)
-        test_sampler = torch.utils.data.SequentialSampler(test_dataset)
-
-    return train_dataset, test_dataset, train_sampler, test_sampler
-
-
 def main(args):
     utils.init_distributed_mode(args)
     print(args)
 
+    os.makedirs('./weights', exist_ok=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.backends.cudnn.benchmark = True
 
@@ -174,22 +211,17 @@ def main(args):
     parameters = utils.add_weight_decay(model, weight_decay=args.weight_decay)
     criterion = nn.CrossEntropyLoss()
     optimizer = nn.RMSprop(parameters, lr=args.lr, alpha=0.9, eps=1e-3, weight_decay=0, momentum=args.momentum)
-    scheduler = nn.StepLR(optimizer,
-                          step_size=args.lr_step_size,
-                          gamma=args.lr_gamma,
-                          warmup_epochs=args.warmup_epochs,
-                          warmup_lr_init=args.warmup_lr_init)
+    scheduler = nn.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma, warmup_epochs=args.warmup_epochs, warmup_lr_init=args.warmup_lr_init)
+    model_ema = nn.EMA(model, decay=0.9999)
 
-    model_without_ddp = model
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
-        model_without_ddp = model.module
-
-    model_ema = nn.EMA(model_without_ddp, decay=0.9999)
+    else:
+        model = torch.nn.DataParallel(model)
 
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu")
-        model_without_ddp.load_state_dict(checkpoint["model"])
+        model.module.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         scheduler.load_state_dict(checkpoint["scheduler"])
         args.start_epoch = checkpoint["epoch"] + 1
@@ -204,24 +236,24 @@ def main(args):
 
         train_one_epoch(model, criterion, optimizer, train_loader, device, epoch, args, model_ema)
         scheduler.step(epoch + 1)
-        _, acc1, acc5 = validate(model_ema.model, criterion, test_loader, device=device, log_suffix='EMA')
+        _, acc1, acc5 = validate(model_ema.model, criterion, test_loader, device=device, args=args, log_suffix='EMA')
         checkpoint = {
-            'model': model_without_ddp.state_dict(),
+            'model': model.module.state_dict(),
             'model_ema': model_ema.model.state_dict(),
             'optimizer': optimizer.state_dict(),
             'scheduler': scheduler.state_dict(),
             'epoch': epoch,
             'args': args,
         }
-        checkpoint_model = {
+        state_ema = {
             'model': deepcopy(model_ema.model).half()
         }
 
-        torch.save(checkpoint, 'weights/last.pth')
-        torch.save(checkpoint_model, 'weights/last_m.pth')
+        torch.save(checkpoint, 'weights/last.ckpt')
+        torch.save(state_ema, 'weights/last.pth')
         if acc1 > best:
-            torch.save(checkpoint, 'weights/best.pth')
-            torch.save(checkpoint_model, 'weights/best_m.pth')
+            torch.save(checkpoint, 'weights/best.ckpt')
+            torch.save(state_ema, 'weights/last.pth')
         best = max(acc1, best)
 
     total_time = time.time() - start_time
@@ -229,36 +261,6 @@ def main(args):
     print(f"Training Time {total_time_str}")
 
 
-def get_args_parser():
-    import argparse
-
-    parser = argparse.ArgumentParser(description="MobileNetV3 Large/Small training code")
-
-    parser.add_argument("--data-path", default="../../Projects/Datasets/IMAGENET/", type=str, help="dataset path")
-
-    parser.add_argument("--batch-size", default=32, type=int, help="images per gpu, total = $NGPU x batch_size")
-    parser.add_argument("--epochs", default=90, type=int, help="number of total epochs to run")
-    parser.add_argument("--workers", default=8, type=int, help="number of data loading workers")
-
-    parser.add_argument("--lr", default=0.1, type=float, help="initial learning rate")
-    parser.add_argument("--momentum", default=0.9, type=float, help="momentum")
-    parser.add_argument("--weight-decay", default=1e-4, type=float, help="weight decay")
-
-    parser.add_argument("--warmup-epochs", default=0, type=int, help="number of warmup epochs")
-    parser.add_argument("--warmup-lr-init", default=0, type=float, help="warmup learning rate init")
-    parser.add_argument("--lr-step-size", default=30, type=int, help="decrease lr every step-size epochs")
-    parser.add_argument("--lr-gamma", default=0.1, type=float, help="decrease lr by a factor of lr-gamma")
-
-    parser.add_argument("--interval", default=10, type=int, help="print frequency")
-    parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
-    parser.add_argument("--start-epoch", default=0, type=int, help="start epoch")
-
-    parser.add_argument("--sync-bn", help="Use sync batch norm", action="store_true")
-    parser.add_argument("--random-erase", default=0.0, type=float, help="random erasing probability")
-
-    return parser
-
-
 if __name__ == "__main__":
-    args = get_args_parser().parse_args()
-    main(args)
+    params = get_args_parser()
+    main(args=params)
