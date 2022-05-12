@@ -59,19 +59,6 @@ def add_weight_decay(net, weight_decay=1e-5):
     return [{'params': no_decay, 'weight_decay': 0.}, {'params': decay, 'weight_decay': weight_decay}]
 
 
-def init_distributed_mode(args):
-    args.distributed = int(os.getenv('WORLD_SIZE', 1)) > 1
-    if args.distributed:
-        args.local_rank = int(os.environ["RANK"])
-        args.world_size = int(os.environ["WORLD_SIZE"])
-        torch.cuda.set_device(args.local_rank)
-        torch.distributed.init_process_group(backend='nccl', init_method='env://')
-
-    print(f"| distributed init (rank {args.local_rank}): env://", flush=True)
-
-    setup_for_distributed(args.local_rank == 0)
-
-
 def setup_for_distributed(is_master):
     """
     This function disables printing when not in master process
@@ -86,3 +73,16 @@ def setup_for_distributed(is_master):
             builtin_print(*args, **kwargs)
 
     __builtin__.print = print
+
+
+def init_distributed_mode(args):
+    args.distributed = int(os.getenv('WORLD_SIZE', 1)) > 1
+    if args.distributed:
+        args.local_rank = int(os.environ["RANK"])
+        args.world_size = int(os.environ["WORLD_SIZE"])
+        torch.cuda.set_device(args.local_rank)
+        torch.distributed.init_process_group(backend='nccl', init_method='env://')
+
+    print(f"| distributed init (rank {args.local_rank}): env://", flush=True)
+
+    setup_for_distributed(args.local_rank == 0)
