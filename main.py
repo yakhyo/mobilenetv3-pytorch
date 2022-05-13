@@ -7,7 +7,7 @@ import torch
 import torch.utils.data
 
 from torchvision.transforms.functional import InterpolationMode
-from torchvision.transforms import transforms
+from torchvision.transforms import transforms, autoaugment
 
 import utils
 import nets as nn
@@ -17,7 +17,6 @@ def get_args_parser():
     import argparse
 
     parser = argparse.ArgumentParser(description="MobileNetV3 Large/Small training code")
-
     parser.add_argument("--data-path", default="../../Projects/Datasets/IMAGENET/", type=str, help="dataset path")
 
     parser.add_argument("--batch-size", default=32, type=int, help="images per gpu, total = num_GPU x batch_size")
@@ -38,12 +37,14 @@ def get_args_parser():
     parser.add_argument("--start-epoch", default=0, type=int, help="start epoch")
 
     parser.add_argument("--sync-bn", help="Use sync batch norm", action="store_true")
+    parser.add_argument("--random-erase", default=0.0, type=float, help="random erasing probability")
+
     parser.add_argument("--world-size", default=1, type=int, help="number of distributed processes")
     parser.add_argument("--local-rank", default=0, type=int, help="number of distributed processes")
 
     parser.add_argument("--test", action='store_true', help='model testing')
-
     parser = parser.parse_args()
+
     return parser
 
 
@@ -57,9 +58,11 @@ def load_data(args):
         transform=transforms.Compose([
             transforms.RandomResizedCrop(size=224, interpolation=InterpolationMode.BILINEAR),
             transforms.RandomHorizontalFlip(0.5),
+            autoaugment.AutoAugment(interpolation=InterpolationMode.BILINEAR),
             transforms.PILToTensor(),
             transforms.ConvertImageDtype(torch.float),
             transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            transforms.RandomErasing(args.random_erase),
         ])
     )
     print(f'Done! Took {time.time() - st}')
@@ -202,7 +205,7 @@ def main(args):
                                               pin_memory=True)
 
     print('Creating Model')
-    model = nn.MobileNetV3L(width_mult=1.0).to(device)
+    model = nn.MobileNetV3S(width_mult=1.0).to(device)
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
@@ -231,7 +234,6 @@ def main(args):
     best = 0
 
     if args.test:
-        print('Start Testing')
         model_ema = torch.load('weights/last.pth', 'cuda')['model'].float()
         _, acc1, acc5 = validate(model_ema, criterion, test_loader, device=device, args=args, log_suffix='EMA')
     else:
@@ -241,8 +243,7 @@ def main(args):
 
             train_one_epoch(model, criterion, optimizer, train_loader, device, epoch, args, model_ema)
             scheduler.step(epoch + 1)
-            _, acc1, acc5 = validate(model_ema.model, criterion, test_loader, device=device, args=args,
-                                     log_suffix='EMA')
+            _, acc1, acc5 = validate(model_ema.model, criterion, test_loader, device=device, args=args, log_suffix='EMA')
             checkpoint = {
                 'model': model.module.state_dict(),
                 'model_ema': model_ema.model.state_dict(),
