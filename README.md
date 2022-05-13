@@ -2,6 +2,8 @@
 
 **Arxiv**: https://arxiv.org/abs/1905.02244
 
+After 300 epochs MobileNetV3L reaches **Acc@1**: 74.3025 **Acc@5**: 91.8342
+
 ### Updates
 
 * 2022.05.13:
@@ -37,7 +39,7 @@ IMAGENET folder structure:
 
 ### Train
 
-Run `main.sh` file by running the following command:
+Run `main.sh` (for DDP) file by running the following command:
 
 ```
 bash main.sh
@@ -49,11 +51,13 @@ bash main.sh
 torchrun --nproc_per_node=@num_gpu main.py --epochs 300  --batch-size 512 --lr 0.064  --lr-step-size 2 --lr-gamma 0.973 --random-erase 0.2
 ```
 
+Run `main.py` for `DataParallel` training.
+
 The training config taken
 from [official torchvision models' training config](https://github.com/pytorch/vision/tree/970ba3555794d163daca0ab95240d21e3035c304/references/classification)
 .
 
 ### Evaluation
-
-- Last Val Accuracy: Acc@1: 74.3025 Acc@5: 91.8342
-- Best Val Accuracy: Acc@1: 74.8xxx Acc@5: 92.0xxx
+```commandline
+python main.py --test
+```

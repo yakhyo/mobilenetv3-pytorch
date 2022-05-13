@@ -7,7 +7,7 @@ import torch
 import torch.utils.data
 
 from torchvision.transforms.functional import InterpolationMode
-from torchvision.transforms import transforms, autoaugment
+from torchvision.transforms import transforms
 
 import utils
 import nets as nn
@@ -38,13 +38,10 @@ def get_args_parser():
     parser.add_argument("--start-epoch", default=0, type=int, help="start epoch")
 
     parser.add_argument("--sync-bn", help="Use sync batch norm", action="store_true")
-    parser.add_argument("--random-erase", default=0.0, type=float, help="random erasing probability")
-
     parser.add_argument("--world-size", default=1, type=int, help="number of distributed processes")
     parser.add_argument("--local-rank", default=0, type=int, help="number of distributed processes")
 
     parser.add_argument("--test", action='store_true', help='model testing')
-    parser.add_argument("--train", action='store_true', default=True, help='model training')
 
     parser = parser.parse_args()
     return parser
@@ -60,11 +57,9 @@ def load_data(args):
         transform=transforms.Compose([
             transforms.RandomResizedCrop(size=224, interpolation=InterpolationMode.BILINEAR),
             transforms.RandomHorizontalFlip(0.5),
-            autoaugment.AutoAugment(interpolation=InterpolationMode.BILINEAR),
             transforms.PILToTensor(),
             transforms.ConvertImageDtype(torch.float),
             transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-            transforms.RandomErasing(args.random_erase),
         ])
     )
     print(f'Done! Took {time.time() - st}')
@@ -236,39 +231,40 @@ def main(args):
     best = 0
 
     if args.test:
-        model_ema = torch.load('weights/last.pt', 'cuda').float()
-        model_ema
-        _, acc1, acc5 = validate(model_ema.model, criterion, test_loader, device=device, args=args, log_suffix='EMA')
+        print('Start Testing')
+        model_ema = torch.load('weights/last.pth', 'cuda')['model'].float()
+        _, acc1, acc5 = validate(model_ema, criterion, test_loader, device=device, args=args, log_suffix='EMA')
+    else:
+        for epoch in range(args.start_epoch, args.epochs):
+            if args.distributed:
+                train_sampler.set_epoch(epoch)
 
-    for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            train_sampler.set_epoch(epoch)
+            train_one_epoch(model, criterion, optimizer, train_loader, device, epoch, args, model_ema)
+            scheduler.step(epoch + 1)
+            _, acc1, acc5 = validate(model_ema.model, criterion, test_loader, device=device, args=args,
+                                     log_suffix='EMA')
+            checkpoint = {
+                'model': model.module.state_dict(),
+                'model_ema': model_ema.model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
+                'epoch': epoch,
+                'args': args,
+            }
+            state_ema = {
+                'model': deepcopy(model_ema.model).half()
+            }
 
-        train_one_epoch(model, criterion, optimizer, train_loader, device, epoch, args, model_ema)
-        scheduler.step(epoch + 1)
-        _, acc1, acc5 = validate(model_ema.model, criterion, test_loader, device=device, args=args, log_suffix='EMA')
-        checkpoint = {
-            'model': model.module.state_dict(),
-            'model_ema': model_ema.model.state_dict(),
-            'optimizer': optimizer.state_dict(),
-            'scheduler': scheduler.state_dict(),
-            'epoch': epoch,
-            'args': args,
-        }
-        state_ema = {
-            'model': deepcopy(model_ema.model).half()
-        }
-
-        torch.save(checkpoint, 'weights/last.ckpt')
-        torch.save(state_ema, 'weights/last.pth')
-        if acc1 > best:
-            torch.save(checkpoint, 'weights/best.ckpt')
+            torch.save(checkpoint, 'weights/last.ckpt')
             torch.save(state_ema, 'weights/last.pth')
-        best = max(acc1, best)
+            if acc1 > best:
+                torch.save(checkpoint, 'weights/best.ckpt')
+                torch.save(state_ema, 'weights/last.pth')
+            best = max(acc1, best)
 
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print(f"Training Time {total_time_str}")
+        total_time = time.time() - start_time
+        total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+        print(f"Training Time {total_time_str}")
 
 
 if __name__ == "__main__":
