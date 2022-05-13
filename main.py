@@ -43,6 +43,9 @@ def get_args_parser():
     parser.add_argument("--world-size", default=1, type=int, help="number of distributed processes")
     parser.add_argument("--local-rank", default=0, type=int, help="number of distributed processes")
 
+    parser.add_argument("--test", action='store_true', help='model testing')
+    parser.add_argument("--train", action='store_true', default=True, help='model training')
+
     parser = parser.parse_args()
     return parser
 
@@ -211,7 +214,8 @@ def main(args):
     parameters = utils.add_weight_decay(model, weight_decay=args.weight_decay)
     criterion = nn.CrossEntropyLoss()
     optimizer = nn.RMSprop(parameters, lr=args.lr, alpha=0.9, eps=1e-3, weight_decay=0, momentum=args.momentum)
-    scheduler = nn.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma, warmup_epochs=args.warmup_epochs, warmup_lr_init=args.warmup_lr_init)
+    scheduler = nn.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma, warmup_epochs=args.warmup_epochs,
+                          warmup_lr_init=args.warmup_lr_init)
     model_ema = nn.EMA(model, decay=0.9999)
 
     if args.distributed:
@@ -230,6 +234,12 @@ def main(args):
     print("Start Training")
     start_time = time.time()
     best = 0
+
+    if args.test:
+        model_ema = torch.load('weights/last.pt', 'cuda').float()
+        model_ema
+        _, acc1, acc5 = validate(model_ema.model, criterion, test_loader, device=device, args=args, log_suffix='EMA')
+
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
