@@ -1,1 +1,1 @@
-torchrun --nproc_per_node=2 main.py --epochs 500  --batch-size 32 --lr 0.064  --lr-step-size 2 --lr-gamma 0.973 --random-erase 0.2 --resume weights/last.ckpt
+torchrun --nproc_per_node=3 main.py --epochs 300  --batch-size 512 --lr 0.064  --lr-step-size 2 --lr-gamma 0.973 --random-erase 0.2
