@@ -205,7 +205,7 @@ def main(args):
                                               pin_memory=True)
 
     print('Creating Model')
-    model = nn.MobileNetV3S(width_mult=1.0).to(device)
+    model = nn.MobileNetV3L(width_mult=1.0).to(device)
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 

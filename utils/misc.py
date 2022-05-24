@@ -4,6 +4,25 @@ import torch
 import torch.distributed as distributed
 
 
+def pad(kernel_size, dilation=1):
+    return kernel_size // (2 * dilation)
+
+
+def _make_divisible(width, divisor=8):
+    new_width = max(divisor, int(width + divisor / 2) // divisor * divisor)
+    if new_width < 0.9 * width:
+        new_width += divisor
+    return new_width
+
+
+def round_filters(filters: int, width_mult: float) -> int:
+    if width_mult == 1.0:
+        return filters
+    return int(_make_divisible(filters * width_mult))
+
+
+
+
 def reduce_tensor(tensor, n):
     """ Getting the average of tensors over multiple GPU devices """
     rt = tensor.clone()

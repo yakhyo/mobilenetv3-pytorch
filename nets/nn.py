@@ -3,17 +3,7 @@ from copy import deepcopy
 import torch
 import torch.nn.functional as F
 
-
-def _pad(kernel_size, dilation=1):
-    return kernel_size // (2 * dilation)
-
-
-def _make_divisible(width):
-    divisor = 8
-    new_width = max(divisor, int(width + divisor / 2) // divisor * divisor)
-    if new_width < 0.9 * width:
-        new_width += divisor
-    return new_width
+from utils.misc import pad, _make_divisible, round_filters
 
 
 def _init_weight(self):
@@ -38,7 +28,7 @@ class Conv2dAct(torch.nn.Module):
                                     out_channels=c2,
                                     kernel_size=k,
                                     stride=s,
-                                    padding=_pad(k, d) if p is None else p,
+                                    padding=pad(k, d) if p is None else p,
                                     dilation=d,
                                     groups=g,
                                     bias=False)
@@ -109,10 +99,9 @@ class MobileNetV3L(torch.nn.Module):
         _mid = [16, 64, 72, 72, 120, 120, 240, 200, 184, 184, 480, 672, 672, 960, 960]
         _out = [16, 24, 24, 40, 40, 40, 80, 80, 80, 80, 112, 112, 160, 160, 160, 960, 1280]
 
-        _mult = lambda x: x * width_mult
-        _inp[:] = list(map(_make_divisible, map(_mult, _inp)))
-        _mid[:] = list(map(_make_divisible, map(_mult, _mid)))
-        _out[:] = list(map(_make_divisible, map(_mult, _out)))
+        _inp = [round_filters(in_channels, width_mult) for in_channels in _inp]
+        _mid = [round_filters(mid_channels, width_mult) for mid_channels in _mid]
+        _out = [round_filters(out_channels, width_mult) for out_channels in _out]
 
         self._layers = [Conv2dAct(3, _inp[0], 3, 2, act=torch.nn.Hardswish)]
         self._layers.extend([
@@ -135,6 +124,7 @@ class MobileNetV3L(torch.nn.Module):
             InvertedResidual(_inp[12], _mid[12], _out[12], 5, 2, True, torch.nn.Hardswish),  # C4 1/16
             InvertedResidual(_inp[13], _mid[13], _out[13], 5, 1, True, torch.nn.Hardswish),
             InvertedResidual(_inp[14], _mid[14], _out[14], 5, 1, True, torch.nn.Hardswish),
+
         ])
 
         self._layers.append(Conv2dAct(_inp[15], _out[15], act=torch.nn.Hardswish))
