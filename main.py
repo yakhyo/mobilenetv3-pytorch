@@ -260,7 +260,7 @@ def main(args):
             torch.save(state_ema, 'weights/last.pth')
             if acc1 > best:
                 torch.save(checkpoint, 'weights/best.ckpt')
-                torch.save(state_ema, 'weights/last.pth')
+                torch.save(state_ema, 'weights/best.pth')
             best = max(acc1, best)
 
         total_time = time.time() - start_time
