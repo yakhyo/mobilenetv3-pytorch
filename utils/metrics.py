@@ -18,16 +18,19 @@ class AverageMeter:
 
 
 def accuracy(output, target, top_k):
-    """Computes the accuracy over the k top predictions for the specified values of k"""
+    """
+    Computes the accuracy over the k top
+    predictions for the specified values of k
+    """
     with torch.inference_mode():
         max_k = max(top_k)
         batch_size = target.size(0)
         if target.ndim == 2:
             target = target.max(dim=1)[1]
 
-        _, pred = output.topk(max_k, 1, True, True)
-        pred = pred.t()
-        correct = pred.eq(target[None])
+        _, prediction = output.topk(max_k, 1, True, True)
+        prediction = prediction.t()
+        correct = prediction.eq(target[None])
 
         res = []
         for k in top_k:
