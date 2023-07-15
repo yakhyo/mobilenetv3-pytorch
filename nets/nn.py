@@ -8,20 +8,6 @@ from utils.general import _make_divisible, round_filters
 from typing import Optional, Callable, List
 
 
-def _init_weight(self):
-    for m in self.modules():
-        if isinstance(m, torch.nn.Conv2d):
-            torch.nn.init.kaiming_normal_(m.weight, mode="fan_out")
-            if m.bias is not None:
-                torch.nn.init.zeros_(m.bias)
-        elif isinstance(m, (torch.nn.BatchNorm2d, torch.nn.GroupNorm)):
-            torch.nn.init.ones_(m.weight)
-            torch.nn.init.zeros_(m.bias)
-        elif isinstance(m, torch.nn.Linear):
-            torch.nn.init.normal_(m.weight, 0, 0.01)
-            torch.nn.init.zeros_(m.bias)
-
-
 class Conv2dNormActivation(nn.Module):
     """Standard Convolutional Block
     Consists of Convolutional, Normalization, Activation Layers
@@ -152,7 +138,6 @@ class InvertedResidual(torch.nn.Module):
         )
 
         if use_se:
-
             layers.append(SqueezeExcitation(mid_channels))
 
         layers.append(
@@ -178,16 +163,12 @@ class MobileNetV3L(torch.nn.Module):
             self,
             width_mult: float,
             num_classes: int = 1000,
-            dropout: float = 0.2,
-            init_weight: bool = True
+            dropout: float = 0.2
     ) -> None:
         super().__init__()
-        if init_weight:
-            _init_weight(self)
 
         _inp = [16, 16, 24, 24, 40, 40, 40, 80, 80, 80, 80, 112, 112, 160,
-                160,
-                160]
+                160, 160]
         _mid = [16, 64, 72, 72, 120, 120, 240, 200, 184, 184, 480, 672, 672,
                 960, 960]
         _out = [16, 24, 24, 40, 40, 40, 80, 80, 80, 80, 112, 112, 160, 160,
@@ -254,6 +235,18 @@ class MobileNetV3L(torch.nn.Module):
             torch.nn.Linear(in_features=_out[16], out_features=num_classes),
         )
 
+        for m in self.modules():
+            if isinstance(m, torch.nn.Conv2d):
+                torch.nn.init.kaiming_normal_(m.weight, mode="fan_out")
+                if m.bias is not None:
+                    torch.nn.init.zeros_(m.bias)
+            elif isinstance(m, (torch.nn.BatchNorm2d, torch.nn.GroupNorm)):
+                torch.nn.init.ones_(m.weight)
+                torch.nn.init.zeros_(m.bias)
+            elif isinstance(m, torch.nn.Linear):
+                torch.nn.init.normal_(m.weight, 0, 0.01)
+                torch.nn.init.zeros_(m.bias)
+
     def forward(self, x):
         x = self.features(x)
         x = self.pool(x)
@@ -265,11 +258,8 @@ class MobileNetV3L(torch.nn.Module):
 class MobileNetV3S(torch.nn.Module):
     """ [https://arxiv.org/abs/1905.02244] """
 
-    def __init__(self, width_mult, num_classes=1000, dropout=0.2,
-                 init_weight=True):
+    def __init__(self, width_mult, num_classes=1000, dropout=0.2):
         super().__init__()
-        if init_weight:
-            _init_weight(self)
 
         _inp = [16, 16, 24, 24, 40, 40, 40, 48, 48, 96, 96, 96]
         _mid = [16, 72, 88, 96, 240, 240, 120, 144, 288, 576, 576]
@@ -322,6 +312,18 @@ class MobileNetV3S(torch.nn.Module):
             torch.nn.Dropout(p=dropout, inplace=True),
             torch.nn.Linear(in_features=_out[12], out_features=num_classes),
         )
+
+        for m in self.modules():
+            if isinstance(m, torch.nn.Conv2d):
+                torch.nn.init.kaiming_normal_(m.weight, mode="fan_out")
+                if m.bias is not None:
+                    torch.nn.init.zeros_(m.bias)
+            elif isinstance(m, (torch.nn.BatchNorm2d, torch.nn.GroupNorm)):
+                torch.nn.init.ones_(m.weight)
+                torch.nn.init.zeros_(m.bias)
+            elif isinstance(m, torch.nn.Linear):
+                torch.nn.init.normal_(m.weight, 0, 0.01)
+                torch.nn.init.zeros_(m.bias)
 
     def forward(self, x):
         x = self.features(x)
