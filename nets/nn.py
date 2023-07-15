@@ -1,27 +1,29 @@
-from copy import deepcopy
+from functools import partial
+from typing import Callable, List, Optional
 
 import torch
 from torch import nn, Tensor
-import torch.nn.functional as F
 
-from utils.general import _make_divisible, round_filters
-from typing import Optional, Callable, List
+
+__all__ = [
+    "MobileNetV3",
+    "mobilenet_v3_large",
+    "mobilenet_v3_small",
+]
+
+
+def _make_divisible(v: float, divisor: int, min_value: Optional[int] = None) -> int:
+
+    if min_value is None:
+        min_value = divisor
+    new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
+    # Make sure that round down does not go down by more than 10%.
+    if new_v < 0.9 * v:
+        new_v += divisor
+    return new_v
 
 
 class Conv2dNormActivation(nn.Module):
-    """Standard Convolutional Block
-    Consists of Convolutional, Normalization, Activation Layers
-    Args:
-        in_channels: input channels
-        out_channels: output channels
-        kernel_size: kernel size
-        stride: stride size
-        padding: padding size
-        dilation: dilation rate
-        groups: number of groups
-        activation: activation function
-    """
-
     def __init__(
             self,
             in_channels: int,
@@ -29,13 +31,14 @@ class Conv2dNormActivation(nn.Module):
             kernel_size: int = 3,
             stride: int = 1,
             padding: Optional[int] = None,
-            dilation: int = 1,
             groups: int = 1,
-            activation: Optional[Callable[..., torch.nn.Module]] = None
+            dilation: int = 1,
+            activation_layer: Optional[Callable[..., torch.nn.Module]] = torch.nn.ReLU
     ) -> None:
         super().__init__()
         if padding is None:
-            padding = kernel_size // (2 * dilation)
+            padding = (kernel_size - 1) // 2 * dilation
+
         layers: List[nn.Module] = [
             nn.Conv2d(
                 in_channels=in_channels,
@@ -45,18 +48,14 @@ class Conv2dNormActivation(nn.Module):
                 padding=padding,
                 dilation=dilation,
                 groups=groups,
-                bias=False
+                bias=False,
             ),
-            nn.BatchNorm2d(
-                num_features=out_channels,
-                eps=0.001,
-                momentum=0.01
-            )
+            nn.BatchNorm2d(num_features=out_channels, eps=0.001, momentum=0.01)
         ]
 
-        if activation is not None:
-            layers.append(activation(inplace=True))
-
+        if activation_layer is not None:
+            layers.append(activation_layer(inplace=True))
+        self.out_channels = out_channels
         self.block = nn.Sequential(*layers)
 
     def forward(self, x: Tensor) -> Tensor:
@@ -64,481 +63,266 @@ class Conv2dNormActivation(nn.Module):
 
 
 class SqueezeExcitation(torch.nn.Module):
-    """ [https://arxiv.org/abs/1709.01507] """
+    """
+    This block implements the Squeeze-and-Excitation block from https://arxiv.org/abs/1709.01507 (see Fig. 1).
+    Parameters ``activation``, and ``scale_activation`` correspond to ``delta`` and ``sigma`` in eq. 3.
 
-    def __init__(self, in_channels):
+    Args:
+        input_channels (int): Number of channels in the input image
+        squeeze_channels (int): Number of squeeze channels
+        activation (Callable[..., torch.nn.Module], optional): ``delta`` activation. Default: ``torch.nn.ReLU``
+        scale_activation (Callable[..., torch.nn.Module]): ``sigma`` activation. Default: ``torch.nn.Sigmoid``
+    """
+
+    def __init__(
+            self,
+            input_channels: int,
+            squeeze_channels: int,
+            activation: Callable[..., torch.nn.Module] = torch.nn.ReLU,
+            scale_activation: Callable[..., torch.nn.Module] = torch.nn.Sigmoid,
+    ) -> None:
         super().__init__()
-        squeeze_channels = _make_divisible(in_channels // 4)
-        self.pool = torch.nn.AdaptiveAvgPool2d(1)
-        self.fc1 = nn.Conv2d(in_channels, squeeze_channels, 1)
-        self.fc2 = nn.Conv2d(squeeze_channels, in_channels, 1)
-        # activation
-        self.relu = nn.ReLU()
-        # scale activation
-        self.hard = nn.Hardsigmoid()
+        self.avgpool = torch.nn.AdaptiveAvgPool2d(1)
+        self.fc1 = torch.nn.Conv2d(input_channels, squeeze_channels, 1)
+        self.fc2 = torch.nn.Conv2d(squeeze_channels, input_channels, 1)
+        self.activation = activation()
+        self.scale_activation = scale_activation()
 
     def _scale(self, x: Tensor) -> Tensor:
-        x = self.pool(x)
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.fc2(x)
-        x = self.hard(x)
-        return x
+        scale = self.avgpool(x)
+        scale = self.fc1(scale)
+        scale = self.activation(scale)
+        scale = self.fc2(scale)
+        return self.scale_activation(scale)
 
     def forward(self, x: Tensor) -> Tensor:
         scale = self._scale(x)
         return scale * x
 
 
-class InvertedResidual(torch.nn.Module):
-    """Inverted Residual Block
-    Args:
-        in_channels:
-        mid_channels:
-        out_channels:
-        kernel_size:
-        stride:
-        use_se:
-        activation:
-    """
-
+class InvertedResidualConfig:
+    # Stores information listed at Tables 1 and 2 of the MobileNetV3 paper
     def __init__(
             self,
-            in_channels: int,
-            mid_channels: int,
+            input_channels: int,
+            kernel: int,
+            expanded_channels: int,
             out_channels: int,
-            kernel_size: int,
-            stride: int,
             use_se: bool,
-            activation: Callable[..., nn.Module]
-    ) -> None:
+            activation: str,
+            stride: int,
+            dilation: int,
+            width_mult: float,
+    ):
+        self.input_channels = self.adjust_channels(input_channels, width_mult)
+        self.kernel = kernel
+        self.expanded_channels = self.adjust_channels(expanded_channels, width_mult)
+        self.out_channels = self.adjust_channels(out_channels, width_mult)
+        self.use_se = use_se
+        self.use_hs = activation == "HS"
+        self.stride = stride
+        self.dilation = dilation
+
+    @staticmethod
+    def adjust_channels(channels: int, width_mult: float):
+        return _make_divisible(channels * width_mult, 8)
+
+
+class InvertedResidual(nn.Module):
+    # Implemented as described at section 5 of MobileNetV3 paper
+    def __init__(
+            self,
+            cnf: InvertedResidualConfig,
+            se_layer: Callable[..., nn.Module] = partial(SqueezeExcitation, scale_activation=nn.Hardsigmoid),
+    ):
         super().__init__()
-        self._shortcut = stride == 1 and in_channels == out_channels
+        if not (1 <= cnf.stride <= 2):
+            raise ValueError("illegal stride value")
+
+        self.use_res_connect = cnf.stride == 1 and cnf.input_channels == cnf.out_channels
 
         layers: List[nn.Module] = []
-        if mid_channels != in_channels:
+        activation_layer = nn.Hardswish if cnf.use_hs else nn.ReLU
+
+        # expand
+        if cnf.expanded_channels != cnf.input_channels:
             layers.append(
                 Conv2dNormActivation(
-                    in_channels=in_channels,
-                    out_channels=mid_channels,
+                    cnf.input_channels,
+                    cnf.expanded_channels,
                     kernel_size=1,
-                    activation=activation
+                    activation_layer=activation_layer,
                 )
             )
 
+        # depthwise
+        stride = 1 if cnf.dilation > 1 else cnf.stride
         layers.append(
             Conv2dNormActivation(
-                in_channels=mid_channels,
-                out_channels=mid_channels,
-                kernel_size=kernel_size,
+                cnf.expanded_channels,
+                cnf.expanded_channels,
+                kernel_size=cnf.kernel,
                 stride=stride,
-                groups=mid_channels,
-                activation=activation
+                dilation=cnf.dilation,
+                groups=cnf.expanded_channels,
+                activation_layer=activation_layer,
             )
         )
+        if cnf.use_se:
+            squeeze_channels = _make_divisible(cnf.expanded_channels // 4, 8)
+            layers.append(se_layer(cnf.expanded_channels, squeeze_channels))
 
-        if use_se:
-            layers.append(SqueezeExcitation(mid_channels))
-
+        # project
         layers.append(
             Conv2dNormActivation(
-                in_channels=mid_channels,
-                out_channels=out_channels,
-                kernel_size=1
+                cnf.expanded_channels,
+                cnf.out_channels,
+                kernel_size=1,
+                activation_layer=None
             )
         )
 
         self.block = nn.Sequential(*layers)
+        self.out_channels = cnf.out_channels
+        self._is_cn = cnf.stride > 1
 
-    def forward(self, x):
-        if self._shortcut:
-            return x + self.block(x)
-        return self.block(x)
+    def forward(self, input: Tensor) -> Tensor:
+        result = self.block(input)
+        if self.use_res_connect:
+            result += input
+        return result
 
 
-class MobileNetV3L(torch.nn.Module):
-    """ [https://arxiv.org/abs/1905.02244] """
-
+class MobileNetV3(nn.Module):
     def __init__(
             self,
-            width_mult: float,
+            inverted_residual_setting: List[InvertedResidualConfig],
+            last_channel: int,
             num_classes: int = 1000,
-            dropout: float = 0.2
+            dropout: float = 0.2,
     ) -> None:
+
         super().__init__()
 
-        _inp = [16, 16, 24, 24, 40, 40, 40, 80, 80, 80, 80, 112, 112, 160,
-                160, 160]
-        _mid = [16, 64, 72, 72, 120, 120, 240, 200, 184, 184, 480, 672, 672,
-                960, 960]
-        _out = [16, 24, 24, 40, 40, 40, 80, 80, 80, 80, 112, 112, 160, 160,
-                160,
-                960, 1280]
+        layers: List[nn.Module] = []
 
-        _inp = [round_filters(in_channels, width_mult) for in_channels in
-                _inp]
-        _mid = [round_filters(mid_channels, width_mult) for mid_channels in
-                _mid]
-        _out = [round_filters(out_channels, width_mult) for out_channels in
-                _out]
+        # building first layer
+        firstconv_output_channels = inverted_residual_setting[0].input_channels
+        layers.append(
+            Conv2dNormActivation(
+                3,
+                firstconv_output_channels,
+                kernel_size=3,
+                stride=2,
+                activation_layer=nn.Hardswish,
+            )
+        )
 
-        self._layers = [
-            Conv2dNormActivation(3, _inp[0], 3, 2,
-                                 activation=torch.nn.Hardswish)]
-        self._layers.extend([
-            InvertedResidual(_inp[0], _mid[0], _out[0], 3, 1, False,
-                             torch.nn.ReLU),
-            InvertedResidual(_inp[1], _mid[1], _out[1], 3, 2, False,
-                             torch.nn.ReLU),  # C1 1/2
-            InvertedResidual(_inp[2], _mid[2], _out[2], 3, 1, False,
-                             torch.nn.ReLU),
+        # building inverted residual blocks
+        for cnf in inverted_residual_setting:
+            layers.append(InvertedResidual(cnf))
 
-            InvertedResidual(_inp[3], _mid[3], _out[3], 5, 2, True,
-                             torch.nn.ReLU),  # C2 1/4
-            InvertedResidual(_inp[4], _mid[4], _out[4], 5, 1, True,
-                             torch.nn.ReLU),
-            InvertedResidual(_inp[5], _mid[5], _out[5], 5, 1, True,
-                             torch.nn.ReLU),
+        # building last several layers
+        lastconv_input_channels = inverted_residual_setting[-1].out_channels
+        lastconv_output_channels = 6 * lastconv_input_channels
+        layers.append(
+            Conv2dNormActivation(
+                lastconv_input_channels,
+                lastconv_output_channels,
+                kernel_size=1,
+                activation_layer=nn.Hardswish,
+            )
+        )
 
-            InvertedResidual(_inp[6], _mid[6], _out[6], 3, 2, False,
-                             torch.nn.Hardswish),  # C3 1/8
-            InvertedResidual(_inp[7], _mid[7], _out[7], 3, 1, False,
-                             torch.nn.Hardswish),
-            InvertedResidual(_inp[8], _mid[8], _out[8], 3, 1, False,
-                             torch.nn.Hardswish),
-            InvertedResidual(_inp[9], _mid[9], _out[9], 3, 1, False,
-                             torch.nn.Hardswish),
-
-            InvertedResidual(_inp[10], _mid[10], _out[10], 3, 1, True,
-                             torch.nn.Hardswish),
-            InvertedResidual(_inp[11], _mid[11], _out[11], 3, 1, True,
-                             torch.nn.Hardswish),
-
-            InvertedResidual(_inp[12], _mid[12], _out[12], 5, 2, True,
-                             torch.nn.Hardswish),  # C4 1/16
-            InvertedResidual(_inp[13], _mid[13], _out[13], 5, 1, True,
-                             torch.nn.Hardswish),
-            InvertedResidual(_inp[14], _mid[14], _out[14], 5, 1, True,
-                             torch.nn.Hardswish),
-
-        ])
-
-        self._layers.append(
-            Conv2dNormActivation(_inp[15], _out[15],
-                                 activation=torch.nn.Hardswish))
-        self.features = torch.nn.Sequential(*self._layers)
-        self.pool = torch.nn.AdaptiveAvgPool2d(1)
-        self.classifier = torch.nn.Sequential(
-            torch.nn.Linear(in_features=_out[15], out_features=_out[16]),
-            torch.nn.Hardswish(inplace=True),
-            torch.nn.Dropout(p=dropout, inplace=True),
-            torch.nn.Linear(in_features=_out[16], out_features=num_classes),
+        self.features = nn.Sequential(*layers)
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.classifier = nn.Sequential(
+            nn.Linear(lastconv_output_channels, last_channel),
+            nn.Hardswish(inplace=True),
+            nn.Dropout(p=dropout, inplace=True),
+            nn.Linear(last_channel, num_classes),
         )
 
         for m in self.modules():
-            if isinstance(m, torch.nn.Conv2d):
-                torch.nn.init.kaiming_normal_(m.weight, mode="fan_out")
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out")
                 if m.bias is not None:
-                    torch.nn.init.zeros_(m.bias)
-            elif isinstance(m, (torch.nn.BatchNorm2d, torch.nn.GroupNorm)):
-                torch.nn.init.ones_(m.weight)
-                torch.nn.init.zeros_(m.bias)
-            elif isinstance(m, torch.nn.Linear):
-                torch.nn.init.normal_(m.weight, 0, 0.01)
-                torch.nn.init.zeros_(m.bias)
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.zeros_(m.bias)
 
-    def forward(self, x):
+    def forward(self, x: Tensor) -> Tensor:
         x = self.features(x)
-        x = self.pool(x)
+
+        x = self.avgpool(x)
         x = torch.flatten(x, 1)
+
         x = self.classifier(x)
         return x
 
 
-class MobileNetV3S(torch.nn.Module):
-    """ [https://arxiv.org/abs/1905.02244] """
+def _mobilenet_v3_conf(arch: str, width_mult: float = 1.0):
+    bneck_conf = partial(InvertedResidualConfig, width_mult=width_mult)
+    adjust_channels = partial(InvertedResidualConfig.adjust_channels, width_mult=width_mult)
 
-    def __init__(self, width_mult, num_classes=1000, dropout=0.2):
-        super().__init__()
+    if arch == "mobilenet_v3_large":
+        inverted_residual_setting = [
+            bneck_conf(16, 3, 16, 16, False, "RE", 1, 1),
+            bneck_conf(16, 3, 64, 24, False, "RE", 2, 1),  # C1
 
-        _inp = [16, 16, 24, 24, 40, 40, 40, 48, 48, 96, 96, 96]
-        _mid = [16, 72, 88, 96, 240, 240, 120, 144, 288, 576, 576]
-        _out = [16, 24, 24, 40, 40, 40, 48, 48, 96, 96, 96, 576, 1024]
+            bneck_conf(24, 3, 72, 24, False, "RE", 1, 1),
+            bneck_conf(24, 5, 72, 40, True, "RE", 2, 1),  # C2
 
-        _mult = lambda x: x * width_mult
-        _inp[:] = list(map(_make_divisible, map(_mult, _inp)))
-        _mid[:] = list(map(_make_divisible, map(_mult, _mid)))
-        _out[:] = list(map(_make_divisible, map(_mult, _out)))
+            bneck_conf(40, 5, 120, 40, True, "RE", 1, 1),
+            bneck_conf(40, 5, 120, 40, True, "RE", 1, 1),
+            bneck_conf(40, 3, 240, 80, False, "HS", 2, 1),  # C3
 
-        self._layers = [
-            Conv2dNormActivation(3, _inp[0], 3, 2,
-                                 activation=torch.nn.Hardswish)]
-        self._layers.extend([
-            InvertedResidual(_inp[0], _mid[0], _out[0], 3, 2, True,
-                             torch.nn.ReLU),  # C1 1/2
+            bneck_conf(80, 3, 200, 80, False, "HS", 1, 1),
+            bneck_conf(80, 3, 184, 80, False, "HS", 1, 1),
+            bneck_conf(80, 3, 184, 80, False, "HS", 1, 1),
+            bneck_conf(80, 3, 480, 112, True, "HS", 1, 1),
+            bneck_conf(112, 3, 672, 112, True, "HS", 1, 1),
+            bneck_conf(112, 5, 672, 160, True, "HS", 2, 1),  # C4
 
-            InvertedResidual(_inp[1], _mid[1], _out[1], 3, 2, False,
-                             torch.nn.ReLU),  # C2 1/4
-            InvertedResidual(_inp[2], _mid[2], _out[2], 3, 1, False,
-                             torch.nn.ReLU),
+            bneck_conf(160, 5, 960, 160, True, "HS", 1, 1),
+            bneck_conf(160, 5, 960, 160, True, "HS", 1, 1),
+        ]
+        last_channel = adjust_channels(1280)  # C5
+    elif arch == "mobilenet_v3_small":
+        inverted_residual_setting = [
+            bneck_conf(16, 3, 16, 16, True, "RE", 2, 1),  # C1
+            bneck_conf(16, 3, 72, 24, False, "RE", 2, 1),  # C2
+            bneck_conf(24, 3, 88, 24, False, "RE", 1, 1),
+            bneck_conf(24, 5, 96, 40, True, "HS", 2, 1),  # C3
+            bneck_conf(40, 5, 240, 40, True, "HS", 1, 1),
+            bneck_conf(40, 5, 240, 40, True, "HS", 1, 1),
+            bneck_conf(40, 5, 120, 48, True, "HS", 1, 1),
+            bneck_conf(48, 5, 144, 48, True, "HS", 1, 1),
+            bneck_conf(48, 5, 288, 96, True, "HS", 2, 1),  # C4
+            bneck_conf(96, 5, 576, 96, True, "HS", 1, 1),
+            bneck_conf(96, 5, 576, 96, True, "HS", 1, 1),
+        ]
+        last_channel = adjust_channels(1024)  # C5
+    else:
+        raise ValueError(f"Unsupported model type {arch}")
 
-            InvertedResidual(_inp[3], _mid[3], _out[3], 5, 2, True,
-                             torch.nn.Hardswish),  # C3 1/8
-            InvertedResidual(_inp[4], _mid[4], _out[4], 5, 1, True,
-                             torch.nn.Hardswish),
-            InvertedResidual(_inp[5], _mid[5], _out[5], 5, 1, True,
-                             torch.nn.Hardswish),
-            InvertedResidual(_inp[6], _mid[6], _out[6], 5, 1, True,
-                             torch.nn.Hardswish),
-            InvertedResidual(_inp[7], _mid[7], _out[7], 5, 1, True,
-                             torch.nn.Hardswish),
-
-            InvertedResidual(_inp[8], _mid[8], _out[8], 5, 2, True,
-                             torch.nn.Hardswish),  # C4 1/16
-            InvertedResidual(_inp[9], _mid[9], _out[9], 5, 1, True,
-                             torch.nn.Hardswish),
-            InvertedResidual(_inp[10], _mid[10], _out[10], 5, 1, True,
-                             torch.nn.Hardswish),
-
-        ])
-
-        self._layers.append(Conv2dNormActivation(_inp[11], _out[11], 1, 2,
-                                                 activation=torch.nn.Hardswish))  # C5 1/32
-        self.features = torch.nn.Sequential(*self._layers)
-        self.pool = torch.nn.AdaptiveAvgPool2d(1)
-        self.classifier = torch.nn.Sequential(
-            torch.nn.Linear(in_features=_out[11], out_features=_out[12]),
-            torch.nn.Hardswish(inplace=True),
-            torch.nn.Dropout(p=dropout, inplace=True),
-            torch.nn.Linear(in_features=_out[12], out_features=num_classes),
-        )
-
-        for m in self.modules():
-            if isinstance(m, torch.nn.Conv2d):
-                torch.nn.init.kaiming_normal_(m.weight, mode="fan_out")
-                if m.bias is not None:
-                    torch.nn.init.zeros_(m.bias)
-            elif isinstance(m, (torch.nn.BatchNorm2d, torch.nn.GroupNorm)):
-                torch.nn.init.ones_(m.weight)
-                torch.nn.init.zeros_(m.bias)
-            elif isinstance(m, torch.nn.Linear):
-                torch.nn.init.normal_(m.weight, 0, 0.01)
-                torch.nn.init.zeros_(m.bias)
-
-    def forward(self, x):
-        x = self.features(x)
-        x = self.pool(x)
-        x = torch.flatten(x, 1)
-        x = self.classifier(x)
-        return x
+    return inverted_residual_setting, last_channel
 
 
-class EMA(torch.nn.Module):
-    """Tensorflow Implementation of Exponential Moving Average"""
-
-    def __init__(self, model, decay=0.9999):
-        super().__init__()
-        self.model = deepcopy(model)
-        self.model.eval()
-        self.decay = decay
-
-    def _update(self, model, update_fn):
-        with torch.no_grad():
-            ema_v = self.model.state_dict().values()
-            model_v = model.state_dict().values()
-            for e, m in zip(ema_v, model_v):
-                e.copy_(update_fn(e, m))
-
-    def update_parameters(self, model):
-        self._update(model, update_fn=lambda e, m: self.decay * e + (
-                1. - self.decay) * m)
+def mobilenet_v3_large() -> MobileNetV3:
+    inverted_residual_setting, last_channel = _mobilenet_v3_conf("mobilenet_v3_large")
+    model = MobileNetV3(inverted_residual_setting, last_channel)
+    return model
 
 
-class PolyLoss:
-    """ [https://arxiv.org/abs/2204.12511?context=cs] """
-
-    def __init__(self, reduction='none', label_smoothing=0.0) -> None:
-        super().__init__()
-        self.reduction = reduction
-        self.label_smoothing = label_smoothing
-        self.softmax = torch.nn.Softmax(dim=-1)
-
-    def __call__(self, prediction, target, epsilon=1.0):
-        ce = F.cross_entropy(prediction, target, reduction=self.reduction,
-                             label_smoothing=self.label_smoothing)
-        pt = torch.sum(
-            F.one_hot(target, num_classes=1000) * self.softmax(prediction),
-            dim=-1)
-        pl = torch.mean(ce + epsilon * (1 - pt))
-        return pl
-
-
-class CrossEntropyLoss:
-    """Cross Entropy Loss"""
-
-    def __init__(self, reduction='mean', label_smoothing=0.0) -> None:
-        super().__init__()
-        self.label_smoothing = label_smoothing
-        self.reduction = reduction
-
-    def __call__(self, prediction: Tensor, target: Tensor) -> Tensor:
-        return F.cross_entropy(
-            prediction,
-            target,
-            reduction=self.reduction,
-            label_smoothing=self.label_smoothing
-        )
-
-
-class RMSprop(torch.optim.Optimizer):
-    def __init__(
-            self,
-            params,
-            lr=1e-2,
-            alpha=0.9,
-            eps=1e-7,
-            weight_decay=0,
-            momentum=0.,
-            centered=False,
-            decoupled_decay=False,
-            lr_in_momentum=True
-    ) -> None:
-
-        defaults = dict(lr=lr, momentum=momentum, alpha=alpha, eps=eps,
-                        centered=centered, weight_decay=weight_decay,
-                        decoupled_decay=decoupled_decay,
-                        lr_in_momentum=lr_in_momentum)
-        super(RMSprop, self).__init__(params, defaults)
-
-    def __setstate__(self, state):
-        super().__setstate__(state)
-        for group in self.param_groups:
-            group.setdefault('momentum', 0)
-            group.setdefault('centered', False)
-
-    def step(self, closure=None):
-        loss = None
-        if closure is not None:
-            loss = closure()
-
-        for group in self.param_groups:
-            for p in group['params']:
-                if p.grad is None:
-                    continue
-                grad = p.grad.data
-                if grad.is_sparse:
-                    raise RuntimeError(
-                        'RMSprop does not support sparse gradients')
-                state = self.state[p]
-
-                if len(state) == 0:
-                    state['step'] = 0
-                    state['square_avg'] = torch.ones_like(
-                        p.data)  # PyTorch inits to zero
-                    if group['momentum'] > 0:
-                        state['momentum_buffer'] = torch.zeros_like(p.data)
-                    if group['centered']:
-                        state['grad_avg'] = torch.zeros_like(p.data)
-
-                square_avg = state['square_avg']
-                one_minus_alpha = 1. - group['alpha']
-
-                state['step'] += 1
-
-                if group['weight_decay'] != 0:
-                    if 'decoupled_decay' in group and group[
-                        'decoupled_decay']:
-                        p.data.add_(p.data, alpha=-group['weight_decay'])
-                    else:
-                        grad = grad.add(p.data, alpha=group['weight_decay'])
-
-                square_avg.add_(grad.pow(2) - square_avg,
-                                alpha=one_minus_alpha)
-
-                if group['centered']:
-                    grad_avg = state['grad_avg']
-                    grad_avg.add_(grad - grad_avg, alpha=one_minus_alpha)
-                    avg = square_avg.addcmul(-1, grad_avg, grad_avg).add(
-                        group['eps']).sqrt_()
-                else:
-                    avg = square_avg.add(group['eps']).sqrt_()
-
-                if group['momentum'] > 0:
-                    buf = state['momentum_buffer']
-                    if 'lr_in_momentum' in group and group[
-                        'lr_in_momentum']:
-                        buf.mul_(group['momentum']).addcdiv_(grad, avg,
-                                                             value=group[
-                                                                 'lr'])
-                        p.data.add_(-buf)
-                    else:
-                        buf.mul_(group['momentum']).addcdiv_(grad, avg)
-                        p.data.add_(buf, alpha=-group['lr'])
-                else:
-                    p.data.addcdiv_(grad, avg, value=-group['lr'])
-
-        return loss
-
-
-class StepLR:
-
-    def __init__(self, optimizer, step_size, gamma=1., warmup_epochs=0,
-                 warmup_lr_init=0):
-
-        self.optimizer = optimizer
-        self.step_size = step_size
-        self.gamma = gamma
-        self.warmup_epochs = warmup_epochs
-        self.warmup_lr_init = warmup_lr_init
-
-        for group in self.optimizer.param_groups:
-            group.setdefault('initial_lr', group['lr'])
-
-        self.base_lr_values = [group['initial_lr'] for group in
-                               self.optimizer.param_groups]
-        self.update_groups(self.base_lr_values)
-
-        if self.warmup_epochs:
-            self.warmup_steps = [(v - warmup_lr_init) / self.warmup_epochs
-                                 for v
-                                 in self.base_lr_values]
-            self.update_groups(self.warmup_lr_init)
-        else:
-            self.warmup_steps = [1 for _ in self.base_lr_values]
-
-    def state_dict(self):
-        return {key: value for key, value in self.__dict__.items() if
-                key != 'optimizer'}
-
-    def load_state_dict(self, state_dict):
-        self.__dict__.update(state_dict)
-
-    def step(self, epoch):
-        if epoch < self.warmup_epochs:
-            values = [self.warmup_lr_init + epoch * s for s in
-                      self.warmup_steps]
-        else:
-            values = [base_lr * (self.gamma ** (epoch // self.step_size))
-                      for
-                      base_lr in self.base_lr_values]
-        if values is not None:
-            self.update_groups(values)
-
-    def update_groups(self, values):
-        if not isinstance(values, (list, tuple)):
-            values = [values] * len(self.optimizer.param_groups)
-        for param_group, value in zip(self.optimizer.param_groups, values):
-            param_group['lr'] = value
-
-
-def mobilenet_v3_large(width_mult: float = 1.0, **kwargs) -> MobileNetV3L:
-    """ MobileNet V3 Large """
-    return MobileNetV3L(width_mult=width_mult, **kwargs)
-
-
-def mobilenet_v3_small(width_mult: float = 1.0, **kwargs) -> MobileNetV3S:
-    """ MobileNet V3 Small """
-    return MobileNetV3S(width_mult=width_mult, **kwargs)
+def mobilenet_v3_small() -> MobileNetV3:
+    inverted_residual_setting, last_channel = _mobilenet_v3_conf("mobilenet_v3_small")
+    model = MobileNetV3(inverted_residual_setting, last_channel)
+    return model
 
 
 if __name__ == '__main__':
