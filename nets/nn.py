@@ -4,7 +4,6 @@ from typing import Callable, List, Optional
 import torch
 from torch import nn, Tensor
 
-
 __all__ = [
     "MobileNetV3",
     "mobilenet_v3_large",
@@ -12,15 +11,18 @@ __all__ = [
 ]
 
 
-def _make_divisible(v: float, divisor: int, min_value: Optional[int] = None) -> int:
-
-    if min_value is None:
-        min_value = divisor
-    new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
+def _make_divisible(v: float, divisor: int) -> int:
+    new_v = max(divisor, int(v + divisor / 2) // divisor * divisor)
     # Make sure that round down does not go down by more than 10%.
     if new_v < 0.9 * v:
         new_v += divisor
     return new_v
+
+
+def _adjust_channels(channels: int, width_mult: float) -> int:
+    if width_mult == 1.0:
+        return channels
+    return _make_divisible(channels * width_mult, divisor=8)
 
 
 class Conv2dNormActivation(nn.Module):
@@ -82,14 +84,14 @@ class SqueezeExcitation(torch.nn.Module):
             scale_activation: Callable[..., torch.nn.Module] = torch.nn.Sigmoid,
     ) -> None:
         super().__init__()
-        self.avgpool = torch.nn.AdaptiveAvgPool2d(1)
+        self.avg_pool = torch.nn.AdaptiveAvgPool2d(1)
         self.fc1 = torch.nn.Conv2d(input_channels, squeeze_channels, 1)
         self.fc2 = torch.nn.Conv2d(squeeze_channels, input_channels, 1)
         self.activation = activation()
         self.scale_activation = scale_activation()
 
     def _scale(self, x: Tensor) -> Tensor:
-        scale = self.avgpool(x)
+        scale = self.avg_pool(x)
         scale = self.fc1(scale)
         scale = self.activation(scale)
         scale = self.fc2(scale)
@@ -114,18 +116,14 @@ class InvertedResidualConfig:
             dilation: int,
             width_mult: float,
     ):
-        self.input_channels = self.adjust_channels(input_channels, width_mult)
+        self.input_channels = _adjust_channels(input_channels, width_mult)
         self.kernel = kernel
-        self.expanded_channels = self.adjust_channels(expanded_channels, width_mult)
-        self.out_channels = self.adjust_channels(out_channels, width_mult)
+        self.expanded_channels = _adjust_channels(expanded_channels, width_mult)
+        self.out_channels = _adjust_channels(out_channels, width_mult)
         self.use_se = use_se
         self.use_hs = activation == "HS"
         self.stride = stride
         self.dilation = dilation
-
-    @staticmethod
-    def adjust_channels(channels: int, width_mult: float):
-        return _make_divisible(channels * width_mult, 8)
 
 
 class InvertedResidual(nn.Module):
@@ -267,7 +265,6 @@ class MobileNetV3(nn.Module):
 
 def _mobilenet_v3_conf(arch: str, width_mult: float = 1.0):
     bneck_conf = partial(InvertedResidualConfig, width_mult=width_mult)
-    adjust_channels = partial(InvertedResidualConfig.adjust_channels, width_mult=width_mult)
 
     if arch == "mobilenet_v3_large":
         inverted_residual_setting = [
@@ -291,7 +288,7 @@ def _mobilenet_v3_conf(arch: str, width_mult: float = 1.0):
             bneck_conf(160, 5, 960, 160, True, "HS", 1, 1),
             bneck_conf(160, 5, 960, 160, True, "HS", 1, 1),
         ]
-        last_channel = adjust_channels(1280)  # C5
+        last_channel = _adjust_channels(1280, width_mult=width_mult)  # C5
     elif arch == "mobilenet_v3_small":
         inverted_residual_setting = [
             bneck_conf(16, 3, 16, 16, True, "RE", 2, 1),  # C1
@@ -306,7 +303,7 @@ def _mobilenet_v3_conf(arch: str, width_mult: float = 1.0):
             bneck_conf(96, 5, 576, 96, True, "HS", 1, 1),
             bneck_conf(96, 5, 576, 96, True, "HS", 1, 1),
         ]
-        last_channel = adjust_channels(1024)  # C5
+        last_channel = _adjust_channels(1024, width_mult=width_mult)  # C5
     else:
         raise ValueError(f"Unsupported model type {arch}")
 
