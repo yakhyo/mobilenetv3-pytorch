@@ -1,24 +1,73 @@
-## Implementation of [MobileNetV3](https://arxiv.org/abs/1905.02244) in PyTorch
+# [MobileNet V3](https://arxiv.org/abs/1905.02244) in PyTorch
 
-**Arxiv**: https://arxiv.org/abs/1905.02244
+MobileNet V3 implementation using PyTorch
 
-After 300 epochs MobileNetV3L reaches **Acc@1**: 74.3025 **Acc@5**: 91.8342
+**Arxiv:** https://arxiv.org/abs/1905.02244
 
-### Updates
+## Table of Contents
 
-* 2022.05.13:
-    - Weights are uploaded to the `weights` folder. `last.ckpt` is checkpoint (88.3MB) (includes model, model_ema, optimizer, ...) and last.pth is model with
-      Exponential Moving Average (11.2MB) and converted to `half()` tensor.
+- [Installation](#installation)
+- [Usage](#usage)
+- [Datasets](#datasets)
+- [Training](#training)
+- [Reference](#reference)
 
-### Dataset
+## Installation
 
-Specify the IMAGENET data folder in the `main.py` file.
-
-``` python
-parser.add_argument("--data-path", default="../../Projects/Datasets/IMAGENET/", type=str, help="dataset path")
+```bash
+pip install -r requirements.txt
 ```
 
-IMAGENET folder structure:
+## Usage
+
+```python
+import torch
+from torchvision import transforms
+
+from PIL import Image
+from nets import mobilenet_v3_small, mobilenet_v3_large
+from assets.meta import IMAGENET_CATEGORIES
+
+model = mobilenet_v3_large()
+model.load_state_dict("./weights/mobilenet_v3_large.pt")  # weights ported from torchvision
+model.float()  # converting weights to float32
+
+
+def preprocess_image(image_path):
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),  # Resize the image to match the model's input size
+        transforms.ToTensor(),  # Convert the image to a PyTorch tensor
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],  # Normalize the image using the mean and std of ImageNet
+            std=[0.229, 0.224, 0.225]
+        ),
+    ])
+
+    image = Image.open(image_path)
+    image = transform(image).unsqueeze(0)  # Add a batch dimension
+    return image
+
+
+def inference(model, image_path):
+    model.eval()
+
+    input_image = preprocess_image(image_path)
+    with torch.no_grad():
+        output = model(input_image)
+
+    _, predicted_class = output.max(1)
+    print(f"Predicted class index: {predicted_class.item()}")
+
+    predicted_label = IMAGENET_CATEGORIES[predicted_class.item()]
+    print(f"Predicted class label: {predicted_label}")
+
+
+inference(model, "assets/tabby_cat.jpg")
+```
+
+## Datasets
+
+ImageNet, folder structure:
 
 ```
 ├── IMAGENET 
@@ -26,18 +75,15 @@ IMAGENET folder structure:
          ├── [class_id1]/xxx.{jpg,png,jpeg}
          ├── [class_id2]/xxy.{jpg,png,jpeg}
          ├── [class_id3]/xxz.{jpg,png,jpeg}
-          ....
+          ...
     ├── val
          ├── [class_id1]/xxx1.{jpg,png,jpeg}
          ├── [class_id2]/xxy2.{jpg,png,jpeg}
          ├── [class_id3]/xxz3.{jpg,png,jpeg}
+          ...
 ```
 
-#### Augmentation:
-
-`AutoAugment` for IMAGENET is used as a default augmentation. The interpolation mode is `BILINEAR`
-
-### Train
+## Training
 
 Run `main.sh` (for DDP) file by running the following command:
 
@@ -51,35 +97,6 @@ bash main.sh
 torchrun --nproc_per_node=@num_gpu main.py --epochs 300  --batch-size 512 --lr 0.064  --lr-step-size 2 --lr-gamma 0.973 --random-erase 0.2
 ```
 
-To resume the training add `--resume @path_to_checkpoint` to `main.sh`
+## Reference
 
-Run `main.py` for `DataParallel` training.
-
-The training config taken
-from [official torchvision models' training config](https://github.com/pytorch/vision/tree/970ba3555794d163daca0ab95240d21e3035c304/references/classification)
-
-### PyTorch Implementation of [PolyLoss: A Polynomial Expansion Perspective of Classification Loss Functions](https://arxiv.org/abs/2204.12511)
-```py
-import torch
-import torch.nn.functional as F
-
-class PolyLoss:
-    """ [https://arxiv.org/abs/2204.12511] """
-
-    def __init__(self, reduction='none', label_smoothing=0.0) -> None:
-        super().__init__()
-        self.reduction = reduction
-        self.label_smoothing = label_smoothing
-        self.softmax = torch.nn.Softmax(dim=-1)
-
-    def __call__(self, prediction, target, epsilon=1.0):
-        ce = F.cross_entropy(prediction, target, reduction=self.reduction, label_smoothing=self.label_smoothing)
-        pt = torch.sum(F.one_hot(target, num_classes=1000) * self.softmax(prediction), dim=-1)
-        pl = torch.mean(ce + epsilon * (1 - pt))
-        return pl
-```
-
-### Evaluation
-```commandline
-python main.py --test
-```
+- [torchvision](https://github.com/pytorch/vision)

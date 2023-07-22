@@ -210,11 +210,11 @@ def main(args):
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
     parameters = utils.add_weight_decay(model, weight_decay=args.weight_decay)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = nn.RMSprop(parameters, lr=args.lr, alpha=0.9, eps=1e-3, weight_decay=0, momentum=args.momentum)
-    scheduler = nn.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma, warmup_epochs=args.warmup_epochs,
+    criterion = utils.CrossEntropyLoss()
+    optimizer = utils.RMSprop(parameters, lr=args.lr, alpha=0.9, eps=1e-3, weight_decay=0, momentum=args.momentum)
+    scheduler = utils.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma, warmup_epochs=args.warmup_epochs,
                           warmup_lr_init=args.warmup_lr_init)
-    model_ema = nn.EMA(model, decay=0.9999)
+    model_ema = utils.EMA(model, decay=0.9999)
 
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])

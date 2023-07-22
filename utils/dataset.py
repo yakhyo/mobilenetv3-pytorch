@@ -6,7 +6,6 @@ from torch.utils import data
 class ImageFolder(data.Dataset):
 
     def __init__(self, root, transform=None):
-
         self.transform = transform
         self.classes, self.class_to_idx = self.find_classes(root)
         self.samples = self.make_dataset(root, self.class_to_idx)
@@ -21,7 +20,6 @@ class ImageFolder(data.Dataset):
         return image, label
 
     def __len__(self):
-
         return len(self.samples)
 
     @staticmethod
@@ -29,14 +27,12 @@ class ImageFolder(data.Dataset):
         with open(path, 'rb') as f:
             image = Image.open(f)
             image = image.convert('RGB')
-
         return image
 
     @staticmethod
     def find_classes(directory):
         class_names = sorted(entry.name for entry in os.scandir(directory) if entry.is_dir())
         class_to_idx = {cls_name: idx for idx, cls_name in enumerate(class_names)}
-
         return class_names, class_to_idx
 
     @staticmethod
