@@ -19,11 +19,11 @@ def get_args_parser():
     parser = argparse.ArgumentParser(description="MobileNetV3 Large/Small training code")
     parser.add_argument("--data-path", default="../../Projects/Datasets/IMAGENET/", type=str, help="dataset path")
 
-    parser.add_argument("--batch-size", default=32, type=int, help="images per gpu, total = num_GPU x batch_size")
-    parser.add_argument("--epochs", default=90, type=int, help="number of total epochs to run")
+    parser.add_argument("--batch-size", default=128, type=int, help="images per gpu, total = num_GPU x batch_size")
+    parser.add_argument("--epochs", default=200, type=int, help="number of total epochs to run")
     parser.add_argument("--workers", default=8, type=int, help="number of data loading workers")
 
-    parser.add_argument("--lr", default=0.1, type=float, help="initial learning rate")
+    parser.add_argument("--lr", default=0.00001, type=float, help="initial learning rate")
     parser.add_argument("--momentum", default=0.9, type=float, help="momentum")
     parser.add_argument("--weight-decay", default=1e-4, type=float, help="weight decay")
 
@@ -32,7 +32,7 @@ def get_args_parser():
     parser.add_argument("--lr-step-size", default=30, type=int, help="decrease lr every step-size epochs")
     parser.add_argument("--lr-gamma", default=0.1, type=float, help="decrease lr by a factor of lr-gamma")
 
-    parser.add_argument("--interval", default=10, type=int, help="print frequency")
+    parser.add_argument("--interval", default=30, type=int, help="print frequency")
     parser.add_argument("--resume", default="", type=str, help="path of checkpoint")
     parser.add_argument("--start-epoch", default=0, type=int, help="start epoch")
 
@@ -56,13 +56,11 @@ def load_data(args):
     train_dataset = utils.dataset.ImageFolder(
         os.path.join(args.data_path, "train"),
         transform=transforms.Compose([
-            transforms.RandomResizedCrop(size=224, interpolation=InterpolationMode.BILINEAR),
-            transforms.RandomHorizontalFlip(0.5),
-            autoaugment.AutoAugment(interpolation=InterpolationMode.BILINEAR),
-            transforms.PILToTensor(),
-            transforms.ConvertImageDtype(torch.float),
-            transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-            transforms.RandomErasing(args.random_erase),
+            transforms.Resize((224, 224)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            transforms.RandomErasing(p=1, scale=(0.05, 0.05))
         ])
     )
     print(f'Done! Took {time.time() - st}')
@@ -70,13 +68,11 @@ def load_data(args):
     print('Loading Validation Data')
     st = time.time()
     test_dataset = utils.dataset.ImageFolder(
-        os.path.join(args.data_path, "val"),
+        os.path.join(args.data_path, "test"),
         transform=transforms.Compose([
-            transforms.Resize(size=256, interpolation=InterpolationMode.BILINEAR),
-            transforms.CenterCrop(size=224),
-            transforms.PILToTensor(),
-            transforms.ConvertImageDtype(torch.float),
-            transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
     )
     print(f'Done! Took {time.time() - st}')
