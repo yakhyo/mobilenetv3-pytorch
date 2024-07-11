@@ -70,7 +70,7 @@ inference(model, "assets/tabby_cat.jpg")
 ImageNet, folder structure:
 
 ```
-├── IMAGENET 
+├── IMAGENET
     ├── train
          ├── [class_id1]/xxx.{jpg,png,jpeg}
          ├── [class_id2]/xxy.{jpg,png,jpeg}

@@ -2,8 +2,6 @@ import torch
 
 
 class AverageMeter:
-    """Computes and stores the average and current value"""
-
     def __init__(self):
         self.val = 0
         self.avg = 0
@@ -18,10 +16,6 @@ class AverageMeter:
 
 
 def accuracy(output, target, top_k):
-    """
-    Computes the accuracy over the k top
-    predictions for the specified values of k
-    """
     with torch.inference_mode():
         max_k = max(top_k)
         batch_size = target.size(0)

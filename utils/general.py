@@ -1,5 +1,4 @@
 import os
-
 from copy import deepcopy
 
 from torch import nn
@@ -24,7 +23,7 @@ def reduce_tensor(tensor, n):
 
 
 def add_weight_decay(model, weight_decay=1e-5):
-    """Applying weight decay to only weights, not biases"""
+    # Applying weight decay to only weights, not biases
     decay = []
     no_decay = []
     for name, param in model.named_parameters():
@@ -45,7 +44,7 @@ The order of `def setup_for_distributed()` and
 
 
 def setup_for_distributed(is_master):
-    """This function disables printing when not in master process"""
+    # This function disables printing when not in master process
     import builtins as __builtin__
 
     builtin_print = __builtin__.print
@@ -59,21 +58,16 @@ def setup_for_distributed(is_master):
 
 
 def init_distributed_mode(args):
-    """Initializing distributed mode"""
+    # Initializing distributed mode
     args.distributed = int(os.getenv('WORLD_SIZE', 1)) > 1
     if args.distributed:
         args.local_rank = int(os.environ["RANK"])
         args.world_size = int(os.environ["WORLD_SIZE"])
         torch.cuda.set_device(args.local_rank)
-        torch.distributed.init_process_group(
-            backend='nccl',
-            init_method='env://'
-        )
+        torch.distributed.init_process_group(backend='nccl', init_method='env://')
 
     if args.distributed:
-        print(
-            f"| distributed init (rank {args.local_rank}): env://", flush=True
-        )
+        print(f"| distributed init (rank {args.local_rank}): env://", flush=True)
     else:
         print("Warning: DP is On. Please use DDP(Distributed Data Parallel")
 
@@ -81,8 +75,6 @@ def init_distributed_mode(args):
 
 
 class EMA(torch.nn.Module):
-    """Exponential Moving Average"""
-
     def __init__(self, model: nn.Module, decay: float = 0.9999) -> None:
         super().__init__()
         self.model = deepcopy(model)
@@ -101,11 +93,7 @@ class EMA(torch.nn.Module):
 
 
 class CrossEntropyLoss:
-    """Cross Entropy Loss"""
-
     def __init__(self, reduction='mean', label_smoothing=0.0) -> None:
-        super().__init__()
-
         self.label_smoothing = label_smoothing
         self.reduction = reduction
 
@@ -120,21 +108,29 @@ class CrossEntropyLoss:
 
 class RMSprop(torch.optim.Optimizer):
     def __init__(
-            self,
-            params,
-            lr=1e-2,
-            alpha=0.9,
-            eps=1e-7,
-            weight_decay=0,
-            momentum=0.,
-            centered=False,
-            decoupled_decay=False,
-            lr_in_momentum=True
-    ):
+        self,
+        params,
+        lr=1e-2,
+        alpha=0.9,
+        eps=1e-7,
+        weight_decay=0,
+        momentum=0.,
+        centered=False,
+        decoupled_decay=False,
+        lr_in_momentum=True
+    ) -> None:
 
-        defaults = dict(lr=lr, momentum=momentum, alpha=alpha, eps=eps, centered=centered, weight_decay=weight_decay,
-                        decoupled_decay=decoupled_decay, lr_in_momentum=lr_in_momentum)
-        super(RMSprop, self).__init__(params, defaults)
+        defaults = dict(
+            lr=lr,
+            momentum=momentum,
+            alpha=alpha,
+            eps=eps,
+            centered=centered,
+            weight_decay=weight_decay,
+            decoupled_decay=decoupled_decay,
+            lr_in_momentum=lr_in_momentum
+        )
+        super().__init__(params, defaults)
 
     def __setstate__(self, state):
         super().__setstate__(state)
@@ -146,7 +142,6 @@ class RMSprop(torch.optim.Optimizer):
         loss = None
         if closure is not None:
             loss = closure()
-
         for group in self.param_groups:
             for p in group['params']:
                 if p.grad is None:
@@ -155,7 +150,6 @@ class RMSprop(torch.optim.Optimizer):
                 if grad.is_sparse:
                     raise RuntimeError('RMSprop does not support sparse gradients')
                 state = self.state[p]
-
                 if len(state) == 0:
                     state['step'] = 0
                     state['square_avg'] = torch.ones_like(p.data)  # PyTorch inits to zero
@@ -166,9 +160,7 @@ class RMSprop(torch.optim.Optimizer):
 
                 square_avg = state['square_avg']
                 one_minus_alpha = 1. - group['alpha']
-
                 state['step'] += 1
-
                 if group['weight_decay'] != 0:
                     if 'decoupled_decay' in group and group['decoupled_decay']:
                         p.data.add_(p.data, alpha=-group['weight_decay'])
@@ -176,14 +168,13 @@ class RMSprop(torch.optim.Optimizer):
                         grad = grad.add(p.data, alpha=group['weight_decay'])
 
                 square_avg.add_(grad.pow(2) - square_avg, alpha=one_minus_alpha)
-
                 if group['centered']:
                     grad_avg = state['grad_avg']
                     grad_avg.add_(grad - grad_avg, alpha=one_minus_alpha)
                     avg = square_avg.addcmul(-1, grad_avg, grad_avg).add(group['eps']).sqrt_()
                 else:
                     avg = square_avg.add(group['eps']).sqrt_()
-
+                    
                 if group['momentum'] > 0:
                     buf = state['momentum_buffer']
                     if 'lr_in_momentum' in group and group['lr_in_momentum']:
@@ -201,14 +192,13 @@ class RMSprop(torch.optim.Optimizer):
 class StepLR:
 
     def __init__(
-            self,
-            optimizer,
-            step_size,
-            gamma=1.,
-            warmup_epochs=0,
-            warmup_lr_init=0
-    ):
-
+        self,
+        optimizer,
+        step_size,
+        gamma=1.,
+        warmup_epochs=0,
+        warmup_lr_init=0
+    ) -> None:
         self.optimizer = optimizer
         self.step_size = step_size
         self.gamma = gamma

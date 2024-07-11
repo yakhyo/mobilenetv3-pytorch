@@ -10,7 +10,7 @@ from torchvision.transforms.functional import InterpolationMode
 from torchvision.transforms import transforms, autoaugment
 
 import utils
-import nets as nn
+from models.mobilenetv3 import mobilenet_v3_large
 
 
 def get_args_parser():
@@ -129,12 +129,14 @@ def train_one_epoch(model, criterion, optimizer, data_loader, device, epoch, arg
         if args.local_rank == 0 and batch_idx % args.interval == 0:
             lrl = [param_group['lr'] for param_group in optimizer.param_groups]
             lr = sum(lrl) / len(lrl)
-            print(f'Train: [{epoch:>3d}][{batch_idx:>4d}/{len(data_loader)}] '
-                  f'Loss: {losses_m.val:.4f} ({losses_m.avg:.4f})  '
-                  f'Time: {batch_time_m.val:.3f}s, {batch_size * args.world_size / batch_time_m.val:>4.2f}/s '
-                  f'LR: {lr:.7f} '
-                  f'Acc@1: {top1_m.val:.4f} ({top1_m.avg:.4f}) '
-                  f'Acc@5: {top5_m.val:.4f} ({top5_m.avg:.4f})')
+            print(
+                f'Train: [{epoch:>3d}][{batch_idx:>4d}/{len(data_loader)}] '
+                f'Loss: {losses_m.val:.4f} ({losses_m.avg:.4f})  '
+                f'Time: {batch_time_m.val:.3f}s, {batch_size * args.world_size / batch_time_m.val:>4.2f}/s '
+                f'LR: {lr:.7f} '
+                f'Acc@1: {top1_m.val:.4f} ({top1_m.avg:.4f}) '
+                f'Acc@5: {top5_m.val:.4f} ({top5_m.avg:.4f})'
+            )
 
 
 def validate(model, criterion, train_loader, device, args, log_suffix=""):
@@ -170,11 +172,13 @@ def validate(model, criterion, train_loader, device, args, log_suffix=""):
 
             end = time.time()
             if args.local_rank == 0 and batch_idx % args.interval == 0:
-                print(f'Test_{log_suffix}: [{batch_idx:>4d}/{last_idx}]  '
-                      f'Time: {batch_time_m.val:.3f} ({batch_time_m.avg:.3f})  '
-                      f'Loss: {losses_m.val:>7.4f} ({losses_m.avg:>6.4f})  '
-                      f'Acc@1: {top1_m.val:>7.4f} ({top1_m.avg:>7.4f})  '
-                      f'Acc@5: {top5_m.val:>7.4f} ({top5_m.avg:>7.4f})')
+                print(
+                    f'Test_{log_suffix}: [{batch_idx:>4d}/{last_idx}]  '
+                    f'Time: {batch_time_m.val:.3f} ({batch_time_m.avg:.3f})  '
+                    f'Loss: {losses_m.val:>7.4f} ({losses_m.avg:>6.4f})  '
+                    f'Acc@1: {top1_m.val:>7.4f} ({top1_m.avg:>7.4f})  '
+                    f'Acc@5: {top5_m.val:>7.4f} ({top5_m.avg:>7.4f})'
+                )
 
     print(f'Acc@1: {top1_m.avg:>7.4f} Acc@5: {top5_m.avg:>7.4f}')
 
@@ -192,28 +196,37 @@ def main(args):
     train_dataset, test_dataset, train_sampler, test_sampler = load_data(args)
 
     print('Creating Data Loaders')
-    train_loader = torch.utils.data.DataLoader(train_dataset,
-                                               batch_size=args.batch_size,
-                                               sampler=train_sampler,
-                                               num_workers=args.workers,
-                                               pin_memory=True)
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        sampler=train_sampler,
+        num_workers=args.workers,
+        pin_memory=True
+    )
 
-    test_loader = torch.utils.data.DataLoader(test_dataset,
-                                              batch_size=args.batch_size,
-                                              sampler=test_sampler,
-                                              num_workers=args.workers,
-                                              pin_memory=True)
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        sampler=test_sampler,
+        num_workers=args.workers,
+        pin_memory=True
+    )
 
     print('Creating Model')
-    model = nn.MobileNetV3L(width_mult=1.0).to(device)
+    model = mobilenet_v3_large().to(device)
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
     parameters = utils.add_weight_decay(model, weight_decay=args.weight_decay)
     criterion = utils.CrossEntropyLoss()
     optimizer = utils.RMSprop(parameters, lr=args.lr, alpha=0.9, eps=1e-3, weight_decay=0, momentum=args.momentum)
-    scheduler = utils.StepLR(optimizer, step_size=args.lr_step_size, gamma=args.lr_gamma, warmup_epochs=args.warmup_epochs,
-                          warmup_lr_init=args.warmup_lr_init)
+    scheduler = utils.StepLR(
+        optimizer,
+        step_size=args.lr_step_size,
+        gamma=args.lr_gamma,
+        warmup_epochs=args.warmup_epochs,
+        warmup_lr_init=args.warmup_lr_init
+    )
     model_ema = utils.EMA(model, decay=0.9999)
 
     if args.distributed:
@@ -243,7 +256,14 @@ def main(args):
 
             train_one_epoch(model, criterion, optimizer, train_loader, device, epoch, args, model_ema)
             scheduler.step(epoch + 1)
-            _, acc1, acc5 = validate(model_ema.model, criterion, test_loader, device=device, args=args, log_suffix='EMA')
+            _, acc1, acc5 = validate(
+                model_ema.model,
+                criterion,
+                test_loader,
+                device=device,
+                args=args,
+                log_suffix='EMA'
+            )
             checkpoint = {
                 'model': model.module.state_dict(),
                 'model_ema': model_ema.model.state_dict(),
