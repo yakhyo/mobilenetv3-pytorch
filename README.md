@@ -25,7 +25,7 @@ import torch
 from torchvision import transforms
 
 from PIL import Image
-from nets import mobilenet_v3_small, mobilenet_v3_large
+from models import mobilenet_v3_small, mobilenet_v3_large
 from assets.meta import IMAGENET_CATEGORIES
 
 model = mobilenet_v3_large()
